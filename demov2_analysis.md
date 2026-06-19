@@ -213,6 +213,7 @@ Từ `eval/summary.json` (6 video × 2 mode):
 
 > [!CAUTION]
 > **instance-feedback MISS video1** (0 events) — RT-SBS feedback FORCE-FG lên vùng person → ViBE giữ person area as FG → khi person rời, ViBE vẫn cho FG → moving gate không tắt → vật không bao giờ chuyển sang static. **Feedback 1 chiều gây hại ở cảnh đơn giản.**
+> **CẬP NHẬT (vibe-timeout, 2026-06-19)**: đã SỬA được — `--vibe-timeout 150` (≈5s) ép hấp thụ vùng FG-protect kẹt lại → balo nổi lên → v1 instance: 0ev/MISS → **1ev/HIT/0FP**. Nhưng cùng cơ chế làm v6/v11 tăng FP — xem §3.5.
 
 ### Key observations:
 
@@ -223,6 +224,26 @@ Từ `eval/summary.json` (6 video × 2 mode):
 3. **video11 FP explosion**: 11–15 FP ở cảnh đông. Gốc: YOLO-nano bỏ sót người đứng im trong đám đông → static + not-animate → false abandoned.
 
 4. **instance-feedback không hơn no-feedback**: FP cao hơn (21 vs 19), miss 1 video, chậm hơn 16%. **Feedback vào ViBE không giúp AOD, còn gây hại.**
+
+---
+
+## 3.5. Ảnh hưởng `--vibe-timeout` cho ControlledViBE (cập nhật 2026-06-19)
+
+Bảng §3 ở trên là eval TRƯỚC khi thêm `--vibe-timeout` (mặc định **150f ≈ 5s**, chỉ áp ControlledViBE = instance/dense; `no-feedback` dùng pybgs nên KHÔNG đụng). Đo lại v1/v6/v11 với 3 cấu hình:
+
+| Video | no-feedback (pybgs) | instance · timeout OFF | instance · timeout 150f |
+|-------|---------------------|------------------------|-------------------------|
+| **video1** (thưa) | HIT · 1 FP (2 ev) | ❌ MISS · 0 FP (0 ev) | ✅ HIT · 0 FP (1 ev) |
+| **video6** (đổi sáng, ~ko người) | HIT 2/2 · 7 FP (9 ev) | HIT 2/2 · 1 FP (3 ev) | HIT 2/2 · 3 FP (5 ev) |
+| **video11** (đông) | HIT · 11 FP (12 ev) | HIT · 15 FP (16 ev) | HIT · 18 FP (19 ev) |
+
+**Cơ chế** — `static_fg = newdiff(clean_bg ĐÓNG BĂNG) AND NOT moving(raw_vibe)`: mask `moving` (ViBE) là thứ DUY NHẤT đè clutter sống-lâu khỏi `static_fg` (clean_bg đóng băng vĩnh viễn coi clutter là "khác"). `--vibe-timeout` ép hấp thụ FG→BG sau 150f = **bộ gia tốc hấp thụ KHÔNG chọn lọc**:
+
+- **v1 (thưa)**: nhả đúng vùng balo bị feedback FG-protect → `static_fg` bật → **MISS→HIT, 0 FP. WIN.**
+- **v6/v11 (nhiều clutter)**: nhả LUÔN clutter (đổi-sáng ở v6 / người-bóng đám đông ở v11) → lọt `static_fg` → **+FP** (v6 +2, v11 +3). Cảnh càng nhiều clutter, phạt FP càng lớn.
+
+> [!IMPORTANT]
+> **Đánh đổi recall ↔ precision**: cùng một nút (timeout) tăng recall (nhả vật thật → v1 HIT) thì giảm precision (nhả cả clutter → v6/v11 +FP), vì moving-gate **không phân biệt "vật cần nhả để bắt" với "clutter cần giữ đè"**. Post-timeout instance đạt recall đầy đủ (HIT mọi vật) nhưng FP tổng (21) > `no-feedback` (19) **cùng recall** → `no-feedback` vẫn là default tốt nhất. Fix CÓ CHỌN LỌC = timeout gated theo `animate` (chỉ nhả nơi `animate_prob` thấp — giữ người ở FG) → xem §5 khuyến nghị.
 
 ---
 
@@ -257,24 +278,7 @@ Từ `eval/summary.json` (6 video × 2 mode):
 
 ---
 
-## 5. So sánh với demov1
-
-| Tiêu chí | demov1 | demov2 | Verdict |
-|----------|--------|--------|---------|
-| HIT rate ABODA | 4/4 (7,8,3,11) | 5/6 (miss video1 instance) | demov1 ✅ |
-| FP (video11) | 12 | 11–15 | ≈ ngang |
-| FP (tổng 6 video) | N/A (chỉ 4) | 19–21 | — |
-| Dedup 1-báo/vật | ✅ | ✅ (đã thêm) | ngang |
-| Owner-gate | ✅ + local mode | ✅ + Prop2 local + timeout | demov2 ✅ |
-| RT-SBS faithful | ❌ | ✅ decision table + feedback | demov2 ✅ |
-| Code structure | 1 god-file | 1 god-file + 7 modules | demov2 nhỉnh |
-| FPS CPU | 7–9 | 7–11 (no-feedback) | ≈ ngang |
-| Relight | ✅ | ✅ (port từ demov1) | ngang |
-| Motion-to-static (Prop3) | ❌ | ✅ | demov2 ✅ |
-
----
-
-## 6. Nhận xét tổng thể
+## 5. Nhận xét tổng thể
 
 ### Điểm mạnh
 1. **Modular core**: 7 module tách rõ responsibility (ViBE, feedback, FSM, matcher, semantic LUT, bg prior, dense reader).
@@ -298,3 +302,4 @@ Từ `eval/summary.json` (6 video × 2 mode):
 > 3. **Fix clean_bg leak**: Thêm `persist_protect` vào update condition, hoặc dùng hysteresis (pixel phải moving liên tục N frame mới cho update).
 > 4. **Config profiles**: Thay 70+ args bằng YAML config files (`aboda_sparse.yaml`, `aboda_crowded.yaml`, ...).
 > 5. **GPU person detector**: FP cảnh đông là bottleneck cứng → cần YOLO-L hoặc RT-DETR trên GPU cho person segmentation.
+> 6. **`--vibe-timeout` có chọn lọc**: timeout hiện nhả FG mù (sửa recall v1 nhưng +FP v6/v11, xem §3.5). Gate theo `animate`: chỉ ép hấp thụ nơi `animate_prob` THẤP (giữ người ở FG, vẫn nhả vật) → giữ được v1 mà không kéo clutter người ở cảnh đông. Truyền `animate16` (runner đã có) vào `ControlledViBE.update()` làm no-absorb mask.

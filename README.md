@@ -92,9 +92,20 @@ tools/                  # sinh dense semantic (SegFormer/PSPNet), batch driver
 ## Output (mỗi `--save-masks-every`)
 `events.json` · `alert_f*.jpg` · `raw_vibe_f*` (ViBE) · `rtsbs_f*` (sau feedback) · `semantic_f*.png`/`semantic_vis_f*` (SegFormer) · `statnew/newdiff/fg/staticfg/moving/keep/stuff/tight/age` · `cleanbg_f*`.
 
-## Kết quả & giới hạn (video11, cái ô)
-- `--mode no-feedback` ≈ **12 events / 11 FP / bắt được ô / ~8.7 FPS** (sát/nhỉnh hơn demov1).
-- Cốt lõi giảm FP = **cổng moving ViBE** (lọc clutter động) + clean_bg hấp thụ clutter; `framediff` làm FP cao hơn.
-- **Giới hạn thật**: YOLO/SegFormer **không phân biệt được cái ô gập đứng với người** (mask "person" trùm lên ô) → các heuristic (dilate-người, ngưỡng) chỉ là **tấm chăn che**, không tổng quát. Lối ra thật sự = model **nhận ra vật** + bắt sự kiện **"chủ rời đi"**.
+## Kết quả & giới hạn
 
-> `rt-sbs/` (gốc paper) và `demov1/` được giữ nguyên làm tham chiếu — demov2 **độc lập**, không import gì từ demov1.
+> **`no-feedback` CHÍNH LÀ demov1** — cùng cấu trúc (pybgs ViBE + clean_bg FSM + trừ-người hậu kỳ, không feedback). Vì vậy không cần so sánh demov1 riêng: nó là **cùng một pipeline**.
+
+**`--vibe-timeout`** (mặc định **150f ≈ 5s**, chỉ áp ControlledViBE = `instance`/`dense`; `no-feedback` dùng pybgs nên không đụng): ép hấp thụ FG kẹt → vật bị FG-protect nổi lên được, nhưng nhả **KHÔNG chọn lọc** nên clutter cũng nổi → tăng FP. Đo trên 3 cảnh:
+
+| video | no-feedback (=demov1) | instance · timeout OFF | instance · timeout 150f |
+|---|---|---|---|
+| video1 (thưa) | HIT · 1 FP | ❌ MISS · 0 FP | ✅ HIT · 0 FP |
+| video6 (đổi sáng) | HIT 2/2 · 7 FP | HIT 2/2 · 1 FP | HIT 2/2 · 3 FP |
+| video11 (đông) | HIT · 11 FP | HIT · 15 FP | HIT · 18 FP |
+
+- Thưa (v1) → timeout sửa miss (**WIN**); nhiều clutter (v6/v11) → timeout **tăng FP**. → `no-feedback` đạt recall đầy đủ với FP thấp nhất, **vẫn là default tốt nhất**.
+- Cốt lõi giảm FP = **cổng moving ViBE** (lọc clutter động) + clean_bg hấp thụ clutter; `framediff` làm FP cao hơn.
+- **Giới hạn thật**: YOLO/SegFormer **không phân biệt được cái ô gập đứng với người** (mask "person" trùm lên ô) → mọi heuristic (dilate-người, ngưỡng, timeout) chỉ là **tấm chăn / đánh đổi recall↔precision**, không tổng quát. Lối ra thật sự = model **nhận ra vật** + bắt sự kiện **"chủ rời đi"**.
+
+> `rt-sbs/` (gốc paper) và `demov1/` giữ làm tham chiếu — demov2 **độc lập**, không import gì từ demov1; `no-feedback` đã tái hiện đúng cấu trúc demov1.
