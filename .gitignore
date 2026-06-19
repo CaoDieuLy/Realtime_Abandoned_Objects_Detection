@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+
+# Ultralytics & Model Weights
+.ultralytics/
+*.pt
+*.pth
+*.onnx
+
+# Outputs and Data
+outputs*/
+semantics*/
+eval/
+eval_reid/
+
+# Logs
+*.log
+logs_*.txt
+
+# OS & Environment
+.DS_Store
+.venv/
+venv/
+env/
+*.pid

@@ -1,0 +1,21 @@
+# demov2 — abandoned-object detection (RT-SBS feedback + clean-background FSM)
+# Install: python -m pip install -r demov2/requirements.txt
+
+# --- Core (always required) ---
+numpy>=1.24
+opencv-python>=4.8
+numba>=0.59            # JIT for ControlledViBE.segmentation (fast CPU ViBE)
+
+# --- Instance semantic (modes: no-feedback, instance-feedback) ---
+ultralytics>=8.3       # YOLO-seg (yolo26n-seg.pt / yolov8*-seg)
+
+# --- Fast C++ ViBE backend (mode: no-feedback, --bgs-backend pybgs) ---
+# Optional: the default "controlled" backend (numba) needs no pybgs.
+pybgs>=3.3
+
+# --- Dense pixel semantic (mode: dense-feedback, SegFormer) ---
+torch>=2.0
+transformers>=4.41
+safetensors>=0.4
+huggingface-hub>=0.23
+pillow>=10.0
