@@ -43,7 +43,6 @@ class StaticMatcher:
         aspect_max: float = 5.0,
         fill_min: float = 0.18,
         max_cands: int = 100,
-        inactive_tol: int = 0,
     ):
         self.match_iou = match_iou
         self.match_dist_px = match_dist_px
@@ -53,12 +52,7 @@ class StaticMatcher:
         self.aspect_max = aspect_max
         self.fill_min = fill_min
         self.max_cands = max_cands
-        # C.3 (S-TAO re-ID): >0 keeps timed-out candidates in an inactive buffer for this
-        # many frames so a blob that reappears (after occlusion) RECOVERS the same track
-        # (same cand_id -> static timer + alerted state preserved). 0 = disabled.
-        self.inactive_tol = int(inactive_tol)
         self.cands: list[Candidate] = []
-        self.inactive: list[Candidate] = []
         self._next = 1
 
     def _match_blob(self, cand: "Candidate", blobs, used: set) -> tuple[float, int]:
@@ -93,7 +87,7 @@ class StaticMatcher:
         blobs = self._blobs(fg_mask)
         used = set()
 
-        # 1. match ACTIVE candidates to current blobs
+        # match active candidates to current blobs
         for cand in self.cands:
             best, bj = self._match_blob(cand, blobs, used)
             if bj >= 0 and best >= 0.001:
@@ -107,54 +101,18 @@ class StaticMatcher:
             else:
                 cand.miss += 1
 
-        # 2. prune / demote timed-out actives
-        if self.inactive_tol > 0:
-            # age the pre-existing inactive buffer first; drop the truly stale
-            survivors = []
-            for c in self.inactive:
-                c.miss += 1
-                if c.miss <= self.inactive_tol:
-                    survivors.append(c)
-            self.inactive = survivors
-            # demote (don't delete) actives that just timed out -> keep id/history/state
-            still_active = []
-            for c in self.cands:
-                (still_active if c.miss <= self.miss_tol else self.inactive).append(c)
-            self.cands = still_active
-        else:
-            self.cands = [c for c in self.cands if c.miss <= self.miss_tol]
-
-        # 3. unmatched blobs: try to RECOVER an inactive track (reuse cand_id), else new
+        # unmatched blobs -> new candidates
         for j, (box, _cen) in enumerate(blobs):
             if j in used:
                 continue
-            rec = None
-            if self.inactive_tol > 0 and self.inactive:
-                best, bi = 0.0, -1
-                for k, c in enumerate(self.inactive):
-                    s, _ = self._match_blob(c, [(box, _cen)], set())
-                    if s > best:
-                        best, bi = s, k
-                if bi >= 0 and best >= 0.001:
-                    rec = self.inactive.pop(bi)
-            if rec is not None:
-                rec.bbox = box
-                rec.last_seen = t_now
-                rec.hits += 1
-                rec.miss = 0
-                rec.history.append((t_now, box))
-                self.cands.append(rec)
-            else:
-                cand = Candidate(cand_id=self._next, bbox=box, first_seen=t_now, last_seen=t_now, first_frame=frame_idx)
-                cand.history.append((t_now, box))
-                self.cands.append(cand)
-                self._next += 1
+            cand = Candidate(cand_id=self._next, bbox=box, first_seen=t_now, last_seen=t_now, first_frame=frame_idx)
+            cand.history.append((t_now, box))
+            self.cands.append(cand)
+            self._next += 1
 
+        self.cands = [c for c in self.cands if c.miss <= self.miss_tol]
         if len(self.cands) > self.max_cands:
             self.cands.sort(key=lambda c: c.first_seen)
             self.cands = self.cands[: self.max_cands]
-        if len(self.inactive) > self.max_cands:
-            self.inactive.sort(key=lambda c: c.last_seen, reverse=True)
-            self.inactive = self.inactive[: self.max_cands]
         return self.cands
 

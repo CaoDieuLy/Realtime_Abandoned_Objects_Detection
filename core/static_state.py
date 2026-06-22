@@ -107,7 +107,7 @@ class StaticForegroundState:
         return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
 
     # ---- re-light (global lighting-mode switch) ----
-    def _relight_step(self, frame: np.ndarray, gray: np.ndarray):
+    def _relight_step(self, frame: np.ndarray, gray: np.ndarray, protect_mask: np.ndarray | None = None):
         if self.ref_V is None:
             self.ref_V = float(self.clean_bg.mean())
             self.ref_S = float(cv2.cvtColor(self.clean_bg_color.astype(np.uint8), cv2.COLOR_BGR2HSV)[..., 1].mean())
@@ -116,7 +116,7 @@ class StaticForegroundState:
             self._relearn_buf_c.append(frame.astype(np.float32))
             self._relearn_left -= 1
             if self._relearn_left <= 0:
-                self._finish_relearn()
+                self._finish_relearn(protect_mask)
             self._prev_gray = gray.copy()
             return True
         curV = float(gray.mean())
@@ -158,7 +158,7 @@ class StaticForegroundState:
         self.tight_mask = z.copy()
         return {
             "abandoned": z.copy(), "static_fg": z.copy(), "moving": z.copy(),
-            "newdiff": z.copy(), "keep": z.copy(), "age": z.copy(),
+            "newdiff": z.copy(), "keep": z.copy(), "stuff": z.copy(), "age": z.copy(),
             "tight": z.copy(), "relearning": True,
         }
 
@@ -177,7 +177,7 @@ class StaticForegroundState:
         # re-light: pause detection while rebuilding clean_bg for a new lighting mode
         self.relearning = False
         if cfg.relight and self.clean_bg_color is not None:
-            if self._relight_step(frame_bgr, gray):
+            if self._relight_step(frame_bgr, gray, protect_mask):
                 self.relearning = True
                 return self._zeros_result()
 

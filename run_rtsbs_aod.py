@@ -325,8 +325,9 @@ def parse_args():
     ap.add_argument(
         "--mode",
         choices=["custom", "no-feedback", "instance-feedback", "dense-feedback"],
-        default="custom",
+        default="no-feedback",
         help="pipeline preset (overrides --bgs-backend/--semantic-feedback/--aod-motion-source). "
+             "DEFAULT no-feedback so a bare run works out of the box (= demov1 pipeline). "
              "no-feedback: fast C++ ViBE, semantic is NOT written back into the BGS model; semantic "
              "only removes people downstream (the classic BGS+person-filter pipeline). "
              "instance-feedback: instance seg (YOLO) + one-sided RT-SBS feedback (force-FG protect) into ViBE. "
@@ -412,9 +413,6 @@ def parse_args():
     ap.add_argument("--area-min", type=int, default=60)
     ap.add_argument("--area-max", type=int, default=30000)
     ap.add_argument("--miss-tol-s", type=float, default=1.0)
-    ap.add_argument("--inactive-tol-s", type=float, default=0.0,
-                    help="C.3 (S-TAO re-ID): keep timed-out tracks in an inactive buffer this many "
-                         "seconds so a reappearing object recovers the SAME track (no re-alert / no timer reset). 0=off")
     ap.add_argument("--aspect-max", type=float, default=5.0)
     ap.add_argument("--fill-min", type=float, default=0.18)
 
@@ -627,7 +625,6 @@ def main() -> int:
         miss_tol=max(1, int(args.miss_tol_s * fps)),
         aspect_max=args.aspect_max,
         fill_min=args.fill_min,
-        inactive_tol=int(args.inactive_tol_s * fps),
     )
 
     cap = cv2.VideoCapture(args.video)
