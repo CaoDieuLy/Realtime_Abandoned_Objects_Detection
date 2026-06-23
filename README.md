@@ -67,6 +67,8 @@ Lưu mask debug: thêm `--save-masks-every 300 --outdir <dir>`.
 - `--semantic-mode {none|online-yoloseg|online-segformer|online-pspnet|dense}`.
 - Class roles: `--yolo-animate-classes`, `--yolo-object-classes` (tên COCO; vd `--yolo-animate-classes car,bus,truck` bỏ person giữ car).
 - Lọc/đếm: `--dilate-animate`, `--area-min`, `--ts-static`, `--owner-gate-local`, `--dedup-dist`, `--motion-to-static`, `--stuff-reject`, …
+- `--warmup-ignore {0|1}` (+`--warmup-ignore-dilate`, `--warmup-ignore-max`) — **person-aware warmup**: loại pixel animate (dùng `--yolo-animate-classes`) khỏi median `clean_bg` để người đứng trong warmup không bị "nướng" vào nền (→ ghost FP khi họ rời). **Default 0 (TẮT) — chỉ chạy YOLO trên frame warmup khi bật, nên không ảnh hưởng tốc độ khi tắt.** Mode-agnostic (clean_bg dùng chung). Trên ABODA **không giảm FP** (người ở v11 đi-ngang nên median đã tự loại). Soi kỹ v11: net 11=11 nhưng nó **gỡ đúng 1 FP sàn rồi jitter frame/dedup** — 10/11 vùng lỗi gốc (người+lóa) y nguyên → không trị nguồn thật. Để dành cho cảnh có người đứng-yên-suốt-warmup thật.
+- `--scene-memory {0|1}` (+`--scene-memory-mode {relocated|background|both}`, `-thresh`, `-source-change`, `-min-move-dist`, `-bg-sim`, `-debug`) — lớp suppress SAU matcher (`core/scene_feature_memory.py`). **`relocated`**: vật-nền bị dời chỗ (match HSV+edge + nguồn đã đổi + ở xa). **`background`**: lóa/bóng để lộ cấu trúc nền cũ. **Default OFF.** ⚠️ Test v11: `relocated` = no-op (0 vật-dời); `background` giảm FP 11→6 NHƯNG **xóa trắng khu đông (suppress 35, gọi nhầm đám đông là "nền")** → **sẽ nuốt vật bỏ quên TRONG đám đông → UNSAFE, đừng bật ở cảnh đông**. Chỉ dùng `relocated` cho camera có vật-nền hay bị xê dịch.
 
 ## Gợi ý chọn mode
 
@@ -106,6 +108,7 @@ tools/                  # sinh dense semantic (SegFormer/PSPNet), batch driver
 
 - Thưa (v1) → timeout sửa miss (**WIN**); nhiều clutter (v6/v11) → timeout **tăng FP**. → `no-feedback` đạt recall đầy đủ với FP thấp nhất, **vẫn là default tốt nhất**.
 - Cốt lõi giảm FP = **cổng moving ViBE** (lọc clutter động) + clean_bg hấp thụ clutter; `framediff` làm FP cao hơn.
+- **Nguồn FP v11 (soi 11 ảnh alert)**: **~4 người đứng thuần** (person-recall trị được) · **~3 cụm "owner-present"** = người + **xe đẩy/túi dưới sàn** bị `MORPH_CLOSE` gộp thành 1 box to (vật-tĩnh-thật nhưng **chủ đứng cạnh trong hàng** → lỗ hổng **owner-leaves**, không phải person-miss) · **~3 lóa/sàn/bóng** · 1 đốm mơ hồ. **0 vật-bị-dời, 0 ghost-warmup.** Box-cụm to là **artifact over-merge** (nhiều vật-tĩnh liền kề + 2 lần CLOSE → 1 blob). → đòn: tăng recall người (~4) + **owner-leaves reasoning** (3 cụm) + xử lý lóa/bóng (~3); *không* phải scene-memory (suppress cả box → nuốt vật thật) hay person-aware-warmup.
 - **Giới hạn thật**: YOLO/SegFormer **không phân biệt được cái ô gập đứng với người** (mask "person" trùm lên ô) → mọi heuristic (dilate-người, ngưỡng, timeout) chỉ là **tấm chăn / đánh đổi recall↔precision**, không tổng quát. Lối ra thật sự = model **nhận ra vật** + bắt sự kiện **"chủ rời đi"**.
 
 > `rt-sbs/` (gốc paper) và `demov1/` giữ làm tham chiếu — demov2 **độc lập**, không import gì từ demov1; `no-feedback` đã tái hiện đúng cấu trúc demov1.

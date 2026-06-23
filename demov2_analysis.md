@@ -247,6 +247,38 @@ Bảng §3 ở trên là eval TRƯỚC khi thêm `--vibe-timeout` (mặc định
 
 ---
 
+## 3.6. Phân tích ảnh FP video11 (thực địa, no-feedback) — xác định NGUỒN lỗi
+
+Soi 11 ảnh `alert_*.jpg` (1 HIT cái ô f1189 + 11 FP):
+
+| FP (frame · tâm) | Khung đỏ là gì | Loại |
+|---|---|---|
+| f670 ·496,186 | đốm xám trên sàn (vật nhỏ/phản chiếu — KHÔNG rõ người) | clutter mơ hồ |
+| f695 ·342,366 | tile sàn tối, KHÔNG vật | sàn/bóng |
+| f869 ·193,243 | **người + xe đẩy/túi** trong hàng (1 box gộp) | cụm owner-present |
+| f929 ·341,218 | người đứng giữa sàn | người đứng |
+| f1307 ·51,146 | vùng tối góc trái (tường/cửa) | bóng/vùng tối |
+| f1309 ·604,178 | **vệt lóa sáng mép phải (cạnh shop)** | **lóa sáng** |
+| f1394 ·90,246 | người đứng trong hàng | người đứng |
+| f1932 ·154,233 | **người + xe đẩy/túi** trong hàng (1 box gộp) | cụm owner-present |
+| f2539 ·375,254 | 2–3 người đứng nói chuyện | người đứng |
+| f2791 ·402,149 | người đứng xa cuối sảnh | người đứng |
+| f3629 ·162,278 | **người + xe đẩy/túi** trong hàng (1 box gộp) | cụm owner-present |
+
+> [!IMPORTANT]
+> Phân loại lại (soi kỹ + cơ chế merge): **~4/11 người đứng thuần** (f929,f1394,f2539,f2791 — person-recall trị được); **~3/11 cụm "owner-present"** (f869,f1932,f3629 = người + **xe đẩy/túi đặt dưới sàn**, bị `MORPH_CLOSE`+`gather_k` GỘP thành 1 box to — KHÔNG phải person-miss thuần; xe đẩy/túi là vật-tĩnh-THẬT nhưng **chủ đang đứng cạnh trong hàng** → đây là lỗ hổng **owner-leaves**, person-recall chỉ co nhỏ box chứ không xóa); **~3/11 lóa/sàn/bóng** (f1309,f695,f1307); **1/11 đốm mơ hồ** (f670). **0/11 = vật-bị-dời, 0/11 = ghost-warmup.** → box-cụm to là **artifact của over-merge** (nhiều vật-tĩnh liền kề + 2 lần CLOSE → 1 connected component → 1 bbox), không phải "1 vật".
+
+**Hệ quả:**
+- **Person-aware warmup** (loại người khỏi median warmup) cho **~0 lợi** trên v11 — đúng vì 0/11 là ghost (người v11 đi-ngang nên median đã tự loại; coverage mask 7.6% nhưng FP 11→11). **So kỹ baseline-OFF vs ON theo VỊ TRÍ**: net 11=11 nhưng KHÔNG cùng tập — nó gỡ **đúng 1 FP sàn (f695)** (chỗ có người warmup cạnh tile → clean_bg đổi) nhưng **khu xếp hàng bắn dư 1 lần** → bù trừ; **10/11 vùng lỗi gốc (người + lóa) y nguyên, chỉ jitter frame/dedup**. → xác nhận không trị nguồn FP thật. Feature đúng & an toàn, **default OFF**, để dành cảnh có người đứng-yên-suốt-warmup thật; KHÔNG bật trong preset.
+- **SCENE_FEATURE_MEMORY — ĐÃ build + test thực nghiệm** (`core/scene_feature_memory.py`, 2 mode `relocated`/`background`, default OFF, unit 4 ca PASS). Kết quả v11 no-feedback: **`relocated` = no-op** (suppress 1 FP sàn trùng hợp, net 12ev/11FP — đúng vì 0 vật-dời). **`background` FP 11→6 NHƯNG suppress 35 candidate = XÓA TRẮNG khu xếp hàng** (gọi nhầm đám đông là "background_glare 1.00" do edge-hist 9-bin quá thô → đám đông ≈ nền). HIT (ô) sống **chỉ vì ô nằm NGOÀI đám đông** (309,270); **vật bỏ quên TRONG đám đông sẽ bị nuốt → UNSAFE**. → scene-memory không giải được "đám đông tan thì im, vật trong đám đông thì báo" (ở mức pixel/blob người-đứng ≡ vật). Chỉ `relocated` hợp lý cho camera có vật-nền-bị-xê-dịch — không phải ABODA.
+- **Đòn hiệu quả thật cho v11** (theo ảnh + cơ chế): (1) **tăng recall người** (YOLO lớn/imgsz cao/RT-DETR GPU) → loại ~4 người đứng thuần + **co nhỏ** cụm owner-present (vỡ blob, chỉ còn xe đẩy/túi); (2) **owner-leaves reasoning** (track người + gắn người↔vật) → diệt 3 cụm owner-present — đây mới là gốc, person-recall không đủ; (3) **xử lý lóa/bóng** (relight/light-comp/stuff-reject) → gỡ ~3 clutter ánh sáng; (4) **ROI khu chờ** — rẻ, đặc thù camera cố định. ⚠️ Không "suppress theo vùng" (scene-memory background): box-cụm là khối GỘP, suppress cả box sẽ nuốt vật thật nằm trong.
+
+### gather-px: đổi default 15 → 5 (2026-06)
+Sweep gather trên v11: box to nhất **931px (g0) → 38 220px (g15) → 48 600px+MISS (g31)** — gather to gộp cả đám đông thành box khổng lồ, quá tay (g31) còn trôi tâm → MISS. Trên v8 (vali rộng) gather giúp **IoU 0.32→0.77** (phủ vật). Vì **gather cố định không thể đúng cả 2** (cần cho vali, hại cho đám đông) → chọn **default 5** làm trung gian: v8 vali IoU~0.74 (vẫn HIT), v11 chỉ còn **1 box vừa (~9 700px)** thay vì 4 box tới 38 000px — FP/HIT y nguyên. (gather = công cụ IoU cho vật rộng, lợi của nó là **cosmetic** — không đổi việc có HIT hay không; hại over-merge đám đông là thật → để nhỏ.)
+- **Dedup**: đã thử thay center-distance bằng **IoU-dedup + detector-extent (B)** → **kết quả y hệt** trên v8 (mảnh nhỏ f3892: IoU 0.018<<0.3 nên không gộp; B im vì YOLO không nhận ra vali tối) → **REVERT về center-distance gốc** (bằng kết quả, nhanh + gọn hơn). Mảnh ghép đúng-mà-thiếu = **containment** (tâm-mới nằm-trong-box-đã-báo); chưa làm. Báo-lặp vật-rộng còn lại là ±1 noise (dedup-ngưỡng), gốc vẫn = perception/owner-leaves.
+
+---
+
 ## 4. Các vấn đề chính (tổng hợp)
 
 ### 🔴 Nghiêm trọng

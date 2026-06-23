@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import sys
 import time
 
@@ -11,7 +12,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from core.clean_bg_prior import build_warmup_background
+from core.clean_bg_prior import build_camera_warmup_background, build_warmup_background, open_camera_capture, resize_to_width
 from core.controlled_vibe import ControlledViBE, ViBEConfig
 from core.dense_semantic import DenseSemanticSequence
 from core.semantic_feedback import SemanticFeedback, SemanticFeedbackConfig
@@ -46,7 +47,7 @@ def semantic_decision_preview(bg_rule: np.ndarray, fg_rule: np.ndarray) -> np.nd
     return cv2.cvtColor(out, cv2.COLOR_RGB2BGR)
 
 
-def read_frame(video_path: str, frame_idx: int) -> np.ndarray:
+def read_frame(video_path: str, frame_idx: int, proc_width: int = 0) -> np.ndarray:
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise FileNotFoundError(video_path)
@@ -55,6 +56,7 @@ def read_frame(video_path: str, frame_idx: int) -> np.ndarray:
     cap.release()
     if not ok:
         raise RuntimeError(f"Cannot read frame {frame_idx} from {video_path}")
+    frame = resize_to_width(frame, proc_width)
     return frame
 
 
@@ -274,11 +276,30 @@ def parse_args():
         description="demo2: original RT-SBS dense semantic feedback + clean-background AOD"
     )
     ap.add_argument("--video", default=resolve_default_video())
+    ap.add_argument("--camera-index", type=int, default=-1,
+                    help="live camera index; >=0 uses webcam/camera instead of --video")
+    ap.add_argument("--camera-width", type=int, default=0, help="optional live camera capture width")
+    ap.add_argument("--camera-height", type=int, default=0, help="optional live camera capture height")
+    ap.add_argument("--camera-fps", type=float, default=0.0, help="optional live camera FPS hint")
     ap.add_argument("--outdir", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs_v11_demo2"))
     ap.add_argument("--bg-learn-seconds", type=float, default=20.0)
     ap.add_argument("--sample-step", type=int, default=5)
+    ap.add_argument("--proc-width", type=int, default=640,
+                    help="downscale frames to this width (keep aspect) for the BGS/FSM pipeline; 0=native. "
+                         "Heavy per-pixel ops run here -> keep it small (640) for speed + meaningful area thresholds.")
+    ap.add_argument("--sem-proc-width", type=int, default=960,
+                    help="resolution fed to the ONLINE semantic engine (YOLO/SegFormer), DECOUPLED from --proc-width. "
+                         "Higher = better person/object detection (its mask is resized back to --proc-width). "
+                         "YOLO cost ~ depends on --yolo-imgsz, not on this, so high detail is ~free.")
     ap.add_argument("--warmup-s", type=float, default=22.0)
     ap.add_argument("--max-frames", type=int, default=0)
+    # person-aware warm-up: exclude animate (person/vehicle) pixels from the clean_bg
+    # median so a stander in warm-up isn't baked into the background (= ghost FP later).
+    # Uses the active semantic engine + the animate class set (--yolo-animate-classes).
+    # Mode-agnostic (clean_bg is shared). Off by default; needs an online semantic engine.
+    ap.add_argument("--warmup-ignore", type=int, default=0, help="1=mask animate classes out of clean_bg warmup median")
+    ap.add_argument("--warmup-ignore-dilate", type=int, default=8, help="dilate the animate mask before excluding (px)")
+    ap.add_argument("--warmup-ignore-max", type=int, default=40, help="max warmup frames used for the masked median")
 
     ap.add_argument("--vibe-samples", type=int, default=30)
     ap.add_argument("--vibe-threshold", type=int, default=10, help="RT-SBS ViBE base threshold; color uses 4.5x this value")
@@ -373,6 +394,14 @@ def parse_args():
     ap.add_argument("--relearn-s", type=float, default=2.0)
 
     # v2c runner features: dedup, owner-gate, crowd, bbox refine
+    ap.add_argument("--heal-revealed", type=int, default=0,
+                    help="adaptive clean_bg: run the semantic engine ON clean_bg to find agents (car/person) "
+                         "BAKED into it; when one leaves (newdiff fires there), absorb the revealed ground "
+                         "instead of alerting. Semantic-based -> robust to outdoor shadows. YOLO/animate modes.")
+    ap.add_argument("--heal-min-area", type=int, default=2000,
+                    help="only heal candidates at least this large (px @ proc resolution)")
+    ap.add_argument("--heal-agent-overlap", type=float, default=0.3,
+                    help="bbox must overlap the baked-agent mask >= this fraction to be treated as a departure ghost")
     ap.add_argument("--dedup-dist", type=float, default=40.0, help="two alerts closer than this (px) = same location")
     ap.add_argument("--dedup-clear-s", type=float, default=3.0, help="object must leave a spot (newdiff empty) this long before a new alert there")
     ap.add_argument("--owner-gate", type=int, default=1, help="1=sparse scenes only: delay alert until the object's reach is clear of people")
@@ -380,7 +409,8 @@ def parse_args():
     ap.add_argument("--owner-margin", type=int, default=15)
     ap.add_argument("--owner-k", type=float, default=0.8)
     ap.add_argument("--crowd-n", type=int, default=6, help="avg >= this many person/vehicle blobs -> crowded -> disable owner-gate")
-    ap.add_argument("--gather-px", type=int, default=15, help="CLOSE tight_mask this many px to merge fragments when refining the alert bbox; 0=off")
+    ap.add_argument("--gather-px", type=int, default=5, help="CLOSE tight_mask this many px to merge fragments when refining the alert bbox; 0=off. "
+                    "Default 5 = light join (covers a fragmented object) without over-merging a crowd into one giant box (v11).")
 
     # Prop3 / Prop2 / Prop1
     ap.add_argument("--motion-to-static", action="store_true",
@@ -405,6 +435,19 @@ def parse_args():
                          ">= this fraction (a standing person). 0 = off; v1 used 0.25")
     ap.add_argument("--person-hull-always", action="store_true",
                     help="apply person-hull regardless of crowd density (since YOLO-nano undercounts people)")
+
+    # Scene Feature Memory: optional conservative suppression AFTER the matcher (default OFF).
+    #   relocated  = pre-existing scene object moved elsewhere (appearance match + source changed + far)
+    #   background = glare/shadow showing the SAME background structure at the candidate's spot
+    ap.add_argument("--scene-memory", type=int, default=0, help="1=enable Scene Feature Memory suppression")
+    ap.add_argument("--scene-memory-mode", choices=["relocated", "background", "both"], default="relocated")
+    ap.add_argument("--scene-memory-patch", type=int, default=32)
+    ap.add_argument("--scene-memory-stride", type=int, default=16)
+    ap.add_argument("--scene-memory-thresh", type=float, default=0.88, help="relocated: appearance match to suppress")
+    ap.add_argument("--scene-memory-source-change", type=float, default=0.15, help="relocated: source patch changed frac")
+    ap.add_argument("--scene-memory-min-move-dist", type=float, default=40.0, help="relocated: source must be this far")
+    ap.add_argument("--scene-memory-bg-sim", type=float, default=0.90, help="background: structure self-similarity to clean_bg")
+    ap.add_argument("--scene-memory-debug", type=int, default=0, help="1=save scene_suppress_*.jpg debug images")
 
     ap.add_argument("--ts-static", type=float, default=5.0)
     ap.add_argument("--min-stable-s", type=float, default=1.5)
@@ -466,14 +509,29 @@ def main() -> int:
 
     os.makedirs(args.outdir, exist_ok=True)
 
-    clean_bg, warmup_frames, fps, total = build_warmup_background(
-        args.video, args.bg_learn_seconds, args.sample_step
-    )
+    use_camera = args.camera_index >= 0
+    if use_camera:
+        clean_bg, warmup_frames, fps, total = build_camera_warmup_background(
+            args.camera_index,
+            args.bg_learn_seconds,
+            args.sample_step,
+            width=args.camera_width,
+            height=args.camera_height,
+            fps_hint=args.camera_fps,
+        )
+        source_label = f"camera:{args.camera_index}"
+    else:
+        clean_bg, warmup_frames, fps, total = build_warmup_background(
+            args.video, args.bg_learn_seconds, args.sample_step, proc_width=args.proc_width
+        )
+        source_label = args.video
     h, w = clean_bg.shape[:2]
     print(
         f"[warmup] {len(warmup_frames)} samples from 0-{args.bg_learn_seconds:.1f}s "
-        f"step={args.sample_step} | {w}x{h} @ {fps:.2f}fps total={total}"
+        f"step={args.sample_step} | {w}x{h} @ {fps:.2f}fps total={total or 'live'} "
+        f"source={source_label}"
     )
+    first_frame_for_semantic = warmup_frames[0].copy()
 
     if args.bgs_backend == "pybgs":
         vibe = PybgsViBe()
@@ -515,7 +573,7 @@ def main() -> int:
             args.segformer_local_files_only,
             args.segformer_min_conf,
         )
-        first_frame = read_frame(args.video, 0)
+        first_frame = first_frame_for_semantic
         online_initial_semantic = online_semantic.infer(first_frame)
         initial_semantic = online_initial_semantic
         print(
@@ -533,7 +591,7 @@ def main() -> int:
             args.pspnet_device,
             args.pspnet_min_conf,
         )
-        first_frame = read_frame(args.video, 0)
+        first_frame = first_frame_for_semantic
         online_initial_semantic = online_semantic.infer(first_frame)
         initial_semantic = online_initial_semantic
         print(
@@ -556,7 +614,7 @@ def main() -> int:
             animate_terms=animate_terms,
             object_terms=object_terms,
         )
-        first_frame = read_frame(args.video, 0)
+        first_frame = first_frame_for_semantic
         online_initial_semantic = online_semantic.infer(first_frame)
         initial_semantic = online_initial_semantic
         print(
@@ -584,6 +642,19 @@ def main() -> int:
         initial_semantic=initial_semantic,
     )
     clean_bg_color = np.median(np.stack(warmup_frames, axis=0), axis=0).astype(np.float32) if warmup_frames else None
+    if args.warmup_ignore and warmup_frames:
+        if online_semantic is not None:
+            from core.clean_bg_prior import build_person_aware_clean_bg
+            from core.semantic_lut import SEMANTIC_MAX
+            tau16 = float(args.tau_animate) * float(SEMANTIC_MAX)
+            clean_bg, clean_bg_color, cov = build_person_aware_clean_bg(
+                warmup_frames, online_semantic.infer, tau16,
+                dilate_px=args.warmup_ignore_dilate, max_frames=args.warmup_ignore_max,
+            )
+            print(f"[warmup] person-aware ON: animate masked from clean_bg "
+                  f"(tau={args.tau_animate}, dilate={args.warmup_ignore_dilate}px, coverage~{cov*100:.1f}%)")
+        else:
+            print("[warmup] --warmup-ignore set but no online semantic engine (dense precomputed) -> skipped")
     sfg = StaticForegroundState(
         clean_bg,
         StaticStateConfig(
@@ -627,9 +698,51 @@ def main() -> int:
         fill_min=args.fill_min,
     )
 
-    cap = cv2.VideoCapture(args.video)
+    scene_mem = None
+    if args.scene_memory and clean_bg_color is not None:
+        from core.scene_feature_memory import SceneFeatureMemory, SceneMemoryConfig
+        scene_mem = SceneFeatureMemory(
+            clean_bg_color,
+            SceneMemoryConfig(
+                patch=args.scene_memory_patch,
+                stride=args.scene_memory_stride,
+                match_thresh=args.scene_memory_thresh,
+                source_change=args.scene_memory_source_change,
+                min_move_dist=args.scene_memory_min_move_dist,
+                bg_sim_thresh=args.scene_memory_bg_sim,
+            ),
+        )
+        scene_modes = ["relocated", "background"] if args.scene_memory_mode == "both" else [args.scene_memory_mode]
+        print(f"[scene-memory] ON mode={args.scene_memory_mode} patches={len(scene_mem.patches)} "
+              f"(thresh={args.scene_memory_thresh} bg_sim={args.scene_memory_bg_sim})")
+    suppressed: list[dict] = []
+    healed: list[dict] = []   # adaptive clean_bg heals (revealed background absorbed)
+
+    # heal-revealed: detect agents (car/person) BAKED into clean_bg -> their regions, when newdiff
+    # fires there later (the agent left), are revealed-ground ghosts to heal, not abandoned objects.
+    baked_agent_mask = None
+    if args.heal_revealed and online_semantic is not None and clean_bg_color is not None:
+        bg_u8 = np.clip(clean_bg_color, 0, 255).astype(np.uint8)
+        a16 = online_semantic.infer(bg_u8)
+        if a16 is not None and a16.shape[:2] != (h, w):
+            a16 = cv2.resize(a16, (w, h), interpolation=cv2.INTER_NEAREST)
+        bm = (a16 >= args.tau_animate * 65535).astype(np.uint8)
+        bm = cv2.dilate(bm, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)))
+        baked_agent_mask = bm.astype(bool)
+        print(f"[heal-revealed] baked-agent mask = {float(baked_agent_mask.mean()) * 100:.1f}% of clean_bg "
+              f"(agents detected in the learned background -> heal on departure)")
+
+    if use_camera:
+        cap = open_camera_capture(
+            args.camera_index,
+            width=args.camera_width,
+            height=args.camera_height,
+            fps=args.camera_fps,
+        )
+    else:
+        cap = cv2.VideoCapture(args.video)
     if not cap.isOpened():
-        raise FileNotFoundError(args.video)
+        raise FileNotFoundError(source_label)
 
     kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
 
@@ -661,11 +774,24 @@ def main() -> int:
         f"owner-gate={'on' if args.owner_gate else 'off'} | dedup={args.dedup_dist}px"
     )
     t0 = time.time()
+    total_label = total if total > 0 else "live"
+    stop_requested = False
+
+    def _request_stop(_signum, _frame):
+        nonlocal stop_requested
+        stop_requested = True
+        print("\n[demo2] stop requested; finishing current frame...", flush=True)
+
+    previous_sigint = signal.getsignal(signal.SIGINT)
+    signal.signal(signal.SIGINT, _request_stop)
     i = 0
     while True:
-        ok, frame = cap.read()
+        if stop_requested:
+            break
+        ok, frame_full = cap.read()
         if not ok:
             break
+        frame = resize_to_width(frame_full, args.proc_width)  # BGS/FSM resolution
         if args.max_frames and i >= args.max_frames:
             break
 
@@ -681,13 +807,23 @@ def main() -> int:
             elif i == 0 and online_initial_semantic is not None:
                 semantic_map = online_initial_semantic
             else:
-                semantic_map = online_semantic.infer(frame)
+                # DECOUPLE: feed the online engine a higher-res frame (sem-proc-width) for
+                # detail, then resize its mask back to the BGS/FSM resolution (proc-width).
+                frame_yolo = resize_to_width(frame_full, args.sem_proc_width)
+                semantic_map = online_semantic.infer(frame_yolo)
+
+            def _to_proc(m):
+                if m is None or m.shape[:2] == (h, w):
+                    return m
+                return cv2.resize(m, (w, h), interpolation=cv2.INTER_AREA)
+
+            semantic_map = _to_proc(semantic_map)
             last_semantic_vis = semantic_map
             ran_semantic = True
             if semantic_gate_on:
                 last_animate16 = semantic_map
-                last_object16 = getattr(online_semantic, "last_object16", None) if online_semantic is not None else None
-                last_stuff16 = getattr(online_semantic, "last_stuff16", None) if online_semantic is not None else None
+                last_object16 = _to_proc(getattr(online_semantic, "last_object16", None) if online_semantic is not None else None)
+                last_stuff16 = _to_proc(getattr(online_semantic, "last_stuff16", None) if online_semantic is not None else None)
 
         # --- RT-SBS semantic feedback into ViBE (toggleable) ---
         if feedback_on:
@@ -821,6 +957,47 @@ def main() -> int:
                     if (i - last_near) < args.owner_clear_s * fps and waited < args.owner_timeout_s:
                         continue
 
+                # Scene Feature Memory: conservative suppression (moved pre-existing object,
+                # or background showing through glare/shadow). Only when very sure.
+                if scene_mem is not None:
+                    tm_mask = (aod["tight"] > 0).astype(np.uint8)
+                    dec = None
+                    for md in scene_modes:
+                        d = scene_mem.classify(frame, aod["newdiff"], b, mask=tm_mask, mode=md)
+                        if d.suppress:
+                            dec = d
+                            break
+                    if dec is not None and dec.suppress:
+                        alerted.add(cand.cand_id)
+                        suppressed.append({"frame": i, "center": [rcx, rcy], "reason": dec.reason,
+                                           "score": round(dec.score, 3)})
+                        if args.scene_memory_debug:
+                            dbg = draw_alert(frame, b, f"{dec.reason} {dec.score:.2f}")
+                            if dec.source_bbox is not None:
+                                sx1, sy1, sx2, sy2 = (int(v) for v in dec.source_bbox)
+                                cv2.rectangle(dbg, (sx1, sy1), (sx2, sy2), (0, 255, 0), 2)
+                            cv2.imwrite(os.path.join(args.outdir, f"scene_suppress_f{i}_c{rcx}_{rcy}.jpg"), dbg)
+                        continue
+
+                # adaptive clean_bg heal: if this candidate sits where clean_bg has a BAKED AGENT
+                # (car/person detected in clean_bg), then newdiff here = the agent LEFT (revealed
+                # ground), not a new object -> absorb into clean_bg + don't alert. Semantic gate
+                # (not intensity) so outdoor shadows don't matter. A real object (machine) isn't in
+                # clean_bg -> not in the mask -> kept.
+                if args.heal_revealed and baked_agent_mask is not None:
+                    hx1, hy1, hx2, hy2 = max(0, b[0]), max(0, b[1]), min(w, b[2]), min(h, b[3])
+                    area_b = (hx2 - hx1) * (hy2 - hy1)
+                    sub = baked_agent_mask[hy1:hy2, hx1:hx2]
+                    if (area_b >= args.heal_min_area and sub.size
+                            and float(sub.mean()) >= args.heal_agent_overlap):
+                        gray_now = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                        sfg.clean_bg[hy1:hy2, hx1:hx2] = gray_now[hy1:hy2, hx1:hx2].astype(np.float32)
+                        if sfg.clean_bg_color is not None:
+                            sfg.clean_bg_color[hy1:hy2, hx1:hx2] = frame[hy1:hy2, hx1:hx2].astype(np.float32)
+                        alerted.add(cand.cand_id)
+                        healed.append({"frame": i, "center": [rcx, rcy], "area": int(area_b)})
+                        continue
+
                 alerted.add(cand.cand_id)
                 ev = {
                     "frame": i,
@@ -877,7 +1054,7 @@ def main() -> int:
         if i % 50 == 0:
             elapsed = time.time() - t0
             print(
-                f"\r[demo2] {i}/{total} events={len(events)} cands={len(cands)} "
+                f"\r[demo2] {i}/{total_label} events={len(events)} cands={len(cands)} "
                 f"{i / max(0.001, elapsed):.1f} FPS",
                 end="",
                 flush=True,
@@ -889,12 +1066,21 @@ def main() -> int:
 
     with open(os.path.join(args.outdir, "events.json"), "w", encoding="utf-8") as f:
         json.dump(events, f, indent=2, ensure_ascii=False)
+    if scene_mem is not None:
+        with open(os.path.join(args.outdir, "suppressed.json"), "w", encoding="utf-8") as f:
+            json.dump(suppressed, f, indent=2, ensure_ascii=False)
+        print(f"[scene-memory] suppressed {len(suppressed)} candidate(s) -> suppressed.json")
+    if args.heal_revealed:
+        with open(os.path.join(args.outdir, "healed.json"), "w", encoding="utf-8") as f:
+            json.dump(healed, f, indent=2, ensure_ascii=False)
+        print(f"[heal-revealed] absorbed {len(healed)} revealed-background region(s) -> healed.json")
 
     for ev in events:
         print(
             f"  f{ev['frame']} t={ev['t_s']}s center={ev['center']} "
             f"wh={ev['wh']} present={ev['present_s']}s"
         )
+    signal.signal(signal.SIGINT, previous_sigint)
     return 0
 
 
