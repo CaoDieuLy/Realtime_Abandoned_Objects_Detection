@@ -68,6 +68,14 @@ Lưu mask debug: thêm `--save-masks-every 300 --outdir <dir>`.
 - Class roles: `--yolo-animate-classes`, `--yolo-object-classes` (tên COCO; vd `--yolo-animate-classes car,bus,truck` bỏ person giữ car).
 - Lọc/đếm: `--dilate-animate`, `--area-min`, `--ts-static`, `--owner-gate-local`, `--dedup-dist`, `--motion-to-static`, `--stuff-reject`, …
 - `--warmup-ignore {0|1}` (+`--warmup-ignore-dilate`, `--warmup-ignore-max`) — **person-aware warmup**: loại pixel animate (dùng `--yolo-animate-classes`) khỏi median `clean_bg` để người đứng trong warmup không bị "nướng" vào nền (→ ghost FP khi họ rời). **Default 0 (TẮT) — chỉ chạy YOLO trên frame warmup khi bật, nên không ảnh hưởng tốc độ khi tắt.** Mode-agnostic (clean_bg dùng chung). Trên ABODA **không giảm FP** (người ở v11 đi-ngang nên median đã tự loại). Soi kỹ v11: net 11=11 nhưng nó **gỡ đúng 1 FP sàn rồi jitter frame/dedup** — 10/11 vùng lỗi gốc (người+lóa) y nguyên → không trị nguồn thật. Để dành cho cảnh có người đứng-yên-suốt-warmup thật.
+- `--proc-width N` (mặc định 640) / `--sem-proc-width N` (mặc định 960) — **TÁCH TRỤC độ phân giải**: BGS/FSM chạy ở `proc-width` (nhẹ, bậc-hai theo pixel → nhanh + area-threshold có nghĩa); YOLO/semantic chạy ở `sem-proc-width` (chi tiết cao, mask resize về proc). Cho camera độ phân giải cao (vd 2560px) → ~10× nhanh mà vẫn detect tốt.
+- `--heal-revealed {0|1}` (+`--heal-lr` 0.15, `--heal-release-s` 5.0) — **adaptive dual-bg** cho camera có xe/người ra-vào. Chạy YOLO TRÊN clean_bg tìm agent (xe/người) bị "nướng" vào nền → cho clean_bg **EMA thích nghi tại pixel đó**:
+  - **Heal vô điều kiện** mỗi frame → xe đỗ thì clean_bg=xe (newdiff~0); xe đi thì clean_bg hóa nền-thật trong ~0.5s → **ghost chết trước ngưỡng 5s** (diệt car-ghost).
+  - **Tự kết thúc (release)**: gỡ pixel về frozen sau `heal-release-s` giây khi (**đã có motion** = agent thật sự rời, **VÀ** YOLO xác nhận không-còn-agent, **VÀ** clean_bg settled). → **không có điểm-mù vĩnh viễn** (vali-bom đặt sau ở chỗ xe cũ vẫn bị bắt). Tín hiệu **motion+YOLO kép** tránh release sớm (xe đỗ YOLO sót → motion=0 → không gỡ; người đi ngang → YOLO thấy xe → không gỡ).
+  - **B — recompute sau relight**: khi clean_bg dựng lại (đổi sáng), chạy lại YOLO để cập nhật mask.
+  - Vật thật không nằm trong mask → không đụng. **Default OFF.**
+  - KQ: vid0355 car-ghost biến mất (2 ev = máy giặt) · vid0103 sạch (1 ev) · video8 HIT/0FP (heal no-op).
+  - ⚠️ Giới hạn (perception): YOLO **sót** agent lúc warmup → vẫn ghost; vật-tĩnh **nhận nhầm** là người (không bao giờ "rời") → blind-spot cục bộ tại đó. Cảnh an ninh cao: cân nhắc ảnh nền trống chụp sẵn.
 - `--scene-memory {0|1}` (+`--scene-memory-mode {relocated|background|both}`, `-thresh`, `-source-change`, `-min-move-dist`, `-bg-sim`, `-debug`) — lớp suppress SAU matcher (`core/scene_feature_memory.py`). **`relocated`**: vật-nền bị dời chỗ (match HSV+edge + nguồn đã đổi + ở xa). **`background`**: lóa/bóng để lộ cấu trúc nền cũ. **Default OFF.** ⚠️ Test v11: `relocated` = no-op (0 vật-dời); `background` giảm FP 11→6 NHƯNG **xóa trắng khu đông (suppress 35, gọi nhầm đám đông là "nền")** → **sẽ nuốt vật bỏ quên TRONG đám đông → UNSAFE, đừng bật ở cảnh đông**. Chỉ dùng `relocated` cho camera có vật-nền hay bị xê dịch.
 
 ## Gợi ý chọn mode
@@ -97,6 +105,13 @@ tools/                  # sinh dense semantic (SegFormer/PSPNet), batch driver
 ## Kết quả & giới hạn
 
 > **`no-feedback` CHÍNH LÀ demov1** — cùng cấu trúc (pybgs ViBE + clean_bg FSM + trừ-người hậu kỳ, không feedback). Vì vậy không cần so sánh demov1 riêng: nó là **cùng một pipeline**.
+
+### Full-sweep ABODA (toàn bộ 13 video, 1 cấu hình chung) — xem [`results_full/BAOCAO_FULL_SWEEP.md`](results_full/BAOCAO_FULL_SWEEP.md)
+Chạy `no-feedback --heal-revealed 1 --semantic-every 10` + defaults, chỉ khác warmup (vid0103=8s, vid0355=3s, còn lại 20s):
+- **Recall 12/12** (không miss thật). 3 "MISS" ban đầu (v2/v4/v9) là **lỗi chấm điểm** (center-distance tol quá chặt; box bắt được nhưng tâm lệch 7–26px). → chấm AOD phải dùng **box-overlap**, không tol cứng.
+- **FP ≈ 42**, tập trung **video7 (21) + video11 (12) + video6 (7) = 40/42**. Sáu video sạch (1,2,3,4,8,9) = **0 FP**. vid0103/0355 sạch (car-ghost đã trị).
+- **video7 = nguồn FP chính = đổi sáng TỪ TỪ** (tối→bật đèn tăng dần→sáng hẳn→mới đặt vật): relight rebuild clean_bg lúc còn **tối (V=133)**, rồi sáng dần lên V≈157 với **dV≈24 < relight-dv 30** và sai-khác **< light-comp 15% coverage** → **cả 2 nhánh sửa nền không kích** → nền-tối-đóng-băng vs cảnh-sáng → **13 FP nổ cùng lúc** ở 5s. `heal-revealed=0%` ở đây nên **không liên quan**. video6 cùng họ (đổi sáng cục bộ). → cần **global-illumination compensation** (đồng bộ độ sáng clean_bg liên tục) cho khe hở này.
+- **video9**: bắt vật nhưng **báo 2 lần**, 1 lần lúc **chủ còn đứng cạnh** = lỗ hổng **owner-leaves**.
 
 **`--vibe-timeout`** (mặc định **150f ≈ 5s**, chỉ áp ControlledViBE = `instance`/`dense`; `no-feedback` dùng pybgs nên không đụng): ép hấp thụ FG kẹt → vật bị FG-protect nổi lên được, nhưng nhả **KHÔNG chọn lọc** nên clutter cũng nổi → tăng FP. Đo trên 3 cảnh:
 

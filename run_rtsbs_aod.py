@@ -396,12 +396,17 @@ def parse_args():
     # v2c runner features: dedup, owner-gate, crowd, bbox refine
     ap.add_argument("--heal-revealed", type=int, default=0,
                     help="adaptive clean_bg: run the semantic engine ON clean_bg to find agents (car/person) "
-                         "BAKED into it; when one leaves (newdiff fires there), absorb the revealed ground "
-                         "instead of alerting. Semantic-based -> robust to outdoor shadows. YOLO/animate modes.")
-    ap.add_argument("--heal-min-area", type=int, default=2000,
-                    help="only heal candidates at least this large (px @ proc resolution)")
-    ap.add_argument("--heal-agent-overlap", type=float, default=0.3,
-                    help="bbox must overlap the baked-agent mask >= this fraction to be treated as a departure ghost")
+                         "BAKED into it, then let clean_bg ADAPT (fast EMA) only at those pixels so a baked "
+                         "agent leaving heals to the real ground (no ghost) within ~1s. Robust to outdoor "
+                         "shadows (uses real frames, not inpaint). YOLO/animate modes. A real object isn't in "
+                         "the mask -> untouched.")
+    ap.add_argument("--heal-lr", type=float, default=0.15,
+                    help="EMA rate clean_bg adapts at baked-agent pixels each frame (higher = ghost heals faster, "
+                         "must heal well under the static threshold so the departure ghost never alerts)")
+    ap.add_argument("--heal-release-s", type=float, default=5.0,
+                    help="release a baked pixel back to frozen after this many seconds of (moved-then-still AND "
+                         "no agent AND clean_bg settled) -> bounds the blind spot to ~this long after a departure; "
+                         "long enough that clean_bg fully heals first so no residual ghost. fps-independent.")
     ap.add_argument("--dedup-dist", type=float, default=40.0, help="two alerts closer than this (px) = same location")
     ap.add_argument("--dedup-clear-s", type=float, default=3.0, help="object must leave a spot (newdiff empty) this long before a new alert there")
     ap.add_argument("--owner-gate", type=int, default=1, help="1=sparse scenes only: delay alert until the object's reach is clear of people")
@@ -655,6 +660,28 @@ def main() -> int:
                   f"(tau={args.tau_animate}, dilate={args.warmup_ignore_dilate}px, coverage~{cov*100:.1f}%)")
         else:
             print("[warmup] --warmup-ignore set but no online semantic engine (dense precomputed) -> skipped")
+
+    # heal-revealed (adaptive dual-bg): agents (car/person) BAKED into clean_bg ghost when they
+    # later leave. Detect them by running the semantic engine ON clean_bg (a parked car is stable
+    # in the median, so YOLO finds it), then let clean_bg ADAPT (fast EMA) ONLY at those pixels:
+    # while the agent is present clean_bg stays = agent (newdiff~0, animate-gate rejects it); when
+    # it leaves, clean_bg becomes the REAL revealed ground within ~1s so the ghost never reaches
+    # the static threshold -> no alert. A real object isn't in that mask -> untouched (still detected).
+    baked_agent_mask = None
+    if args.heal_revealed and online_semantic is not None and clean_bg_color is not None:
+        a16 = online_semantic.infer(np.clip(clean_bg_color, 0, 255).astype(np.uint8))
+        if a16 is not None and a16.shape[:2] != (h, w):
+            a16 = cv2.resize(a16, (w, h), interpolation=cv2.INTER_NEAREST)
+        bm = (a16 >= args.tau_animate * 65535).astype(np.uint8)
+        baked_agent_mask = cv2.dilate(bm, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))).astype(bool)
+        print(f"[heal-revealed] {float(baked_agent_mask.mean()) * 100:.1f}% of clean_bg = baked agents "
+              f"-> heal on DEPARTURE then release (lr={args.heal_lr})")
+    gone_count = np.zeros((h, w), dtype=np.int32)  # consecutive frames a baked pixel looks departed+settled
+    heal_release_frames = max(1, int(args.heal_release_s * fps))
+    saw_motion = np.zeros((h, w), dtype=bool)      # baked pixel has shown motion (agent actually moved/left)
+    prev_heal_gray = None                          # for framediff in the heal block
+    prev_relearning = False                        # for B: recompute baked mask after a relight rebuild
+
     sfg = StaticForegroundState(
         clean_bg,
         StaticStateConfig(
@@ -716,21 +743,6 @@ def main() -> int:
         print(f"[scene-memory] ON mode={args.scene_memory_mode} patches={len(scene_mem.patches)} "
               f"(thresh={args.scene_memory_thresh} bg_sim={args.scene_memory_bg_sim})")
     suppressed: list[dict] = []
-    healed: list[dict] = []   # adaptive clean_bg heals (revealed background absorbed)
-
-    # heal-revealed: detect agents (car/person) BAKED into clean_bg -> their regions, when newdiff
-    # fires there later (the agent left), are revealed-ground ghosts to heal, not abandoned objects.
-    baked_agent_mask = None
-    if args.heal_revealed and online_semantic is not None and clean_bg_color is not None:
-        bg_u8 = np.clip(clean_bg_color, 0, 255).astype(np.uint8)
-        a16 = online_semantic.infer(bg_u8)
-        if a16 is not None and a16.shape[:2] != (h, w):
-            a16 = cv2.resize(a16, (w, h), interpolation=cv2.INTER_NEAREST)
-        bm = (a16 >= args.tau_animate * 65535).astype(np.uint8)
-        bm = cv2.dilate(bm, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)))
-        baked_agent_mask = bm.astype(bool)
-        print(f"[heal-revealed] baked-agent mask = {float(baked_agent_mask.mean()) * 100:.1f}% of clean_bg "
-              f"(agents detected in the learned background -> heal on departure)")
 
     if use_camera:
         cap = open_camera_capture(
@@ -848,6 +860,41 @@ def main() -> int:
             for L in alerted_locs:
                 cv2.circle(protect_u8, (int(L[0]), int(L[1])), 18, 1, -1)
             protect = protect_u8 > 0
+        # adaptive dual-bg (C: unconditional heal + self-terminating release). Fast-EMA clean_bg
+        # toward the current frame at baked-agent pixels EVERY frame: while the agent is parked
+        # clean_bg stays = agent (newdiff~0); when it leaves clean_bg becomes the real ground in
+        # ~1/lr frames -> the departure ghost dies before the static threshold (kills car-ghost).
+        # Then RELEASE a pixel once the agent is gone (no animate, debounced) AND clean_bg has
+        # settled -> back to normal frozen behaviour, so NO permanent blind spot. Real objects
+        # aren't in the mask -> untouched. (A misdetected static object never goes "agent-free" so
+        # it stays healed = a local blind spot there -- the one case this trades off; see docs.)
+        if baked_agent_mask is not None and baked_agent_mask.any():
+            a = float(args.heal_lr)
+            bm = baked_agent_mask
+            ga = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
+            sfg.clean_bg[bm] = (1.0 - a) * sfg.clean_bg[bm] + a * ga[bm]
+            if sfg.clean_bg_color is not None:
+                fca = frame.astype(np.float32)
+                sfg.clean_bg_color[bm] = (1.0 - a) * sfg.clean_bg_color[bm] + a * fca[bm]
+            # release needs BOTH cues to be safe: (motion) the region actually MOVED at some point
+            # (robust to YOLO missing a parked car -> a still car never releases), AND (semantic)
+            # YOLO confirms no agent there now (robust to a passer-by's motion while the car stays).
+            fd = (np.abs(ga - prev_heal_gray) >= args.th_diff) if prev_heal_gray is not None else np.zeros((h, w), dtype=bool)
+            saw_motion |= bm & fd
+            if last_animate16 is not None:
+                an = last_animate16 if last_animate16.shape[:2] == (h, w) else cv2.resize(last_animate16, (w, h), interpolation=cv2.INTER_NEAREST)
+                no_agent = an < args.tau_animate * 65535
+            else:
+                no_agent = np.ones((h, w), dtype=bool)
+            settled = np.abs(ga - sfg.clean_bg) < args.th_diff
+            ok_now = bm & saw_motion & no_agent & settled & (~fd)
+            gone_count[ok_now] += 1
+            gone_count[~ok_now] = 0
+            release = bm & (gone_count >= heal_release_frames)   # debounced (~heal_release_s seconds)
+            if release.any():
+                baked_agent_mask[release] = False
+                saw_motion[release] = False
+            prev_heal_gray = ga
         aod = sfg.update(
             frame,
             motion_mask=motion_mask,
@@ -859,6 +906,23 @@ def main() -> int:
         stat_new = aod["abandoned"]
         newdiff = aod["newdiff"]
         aod_fg = cv2.morphologyEx(stat_new, cv2.MORPH_CLOSE, kernel_close)
+
+        # B: after a relight rebuild, clean_bg is brand-new -> a car parked during the rebuild is
+        # freshly baked. Re-run the agent detector on the rebuilt clean_bg so it heals on departure.
+        relearning_now = bool(aod.get("relearning", False))
+        if (prev_relearning and not relearning_now and args.heal_revealed
+                and online_semantic is not None and sfg.clean_bg_color is not None):
+            ra = online_semantic.infer(np.clip(sfg.clean_bg_color, 0, 255).astype(np.uint8))
+            if ra is not None and ra.shape[:2] != (h, w):
+                ra = cv2.resize(ra, (w, h), interpolation=cv2.INTER_NEAREST)
+            rbm = cv2.dilate((ra >= args.tau_animate * 65535).astype(np.uint8),
+                             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))).astype(bool)
+            baked_agent_mask = rbm if baked_agent_mask is None else (baked_agent_mask | rbm)
+            gone_count[:] = 0
+            saw_motion[:] = False
+            print(f"\n[heal-revealed] relight rebuild -> recomputed baked-agent mask "
+                  f"({float(baked_agent_mask.mean()) * 100:.1f}% of clean_bg)", flush=True)
+        prev_relearning = relearning_now
 
         # --- person presence (animate proxy) -> crowd density + owner-gate distance map ---
         person_b = (last_animate16 >= args.tau_animate * 65535) if last_animate16 is not None else None
@@ -979,25 +1043,6 @@ def main() -> int:
                             cv2.imwrite(os.path.join(args.outdir, f"scene_suppress_f{i}_c{rcx}_{rcy}.jpg"), dbg)
                         continue
 
-                # adaptive clean_bg heal: if this candidate sits where clean_bg has a BAKED AGENT
-                # (car/person detected in clean_bg), then newdiff here = the agent LEFT (revealed
-                # ground), not a new object -> absorb into clean_bg + don't alert. Semantic gate
-                # (not intensity) so outdoor shadows don't matter. A real object (machine) isn't in
-                # clean_bg -> not in the mask -> kept.
-                if args.heal_revealed and baked_agent_mask is not None:
-                    hx1, hy1, hx2, hy2 = max(0, b[0]), max(0, b[1]), min(w, b[2]), min(h, b[3])
-                    area_b = (hx2 - hx1) * (hy2 - hy1)
-                    sub = baked_agent_mask[hy1:hy2, hx1:hx2]
-                    if (area_b >= args.heal_min_area and sub.size
-                            and float(sub.mean()) >= args.heal_agent_overlap):
-                        gray_now = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                        sfg.clean_bg[hy1:hy2, hx1:hx2] = gray_now[hy1:hy2, hx1:hx2].astype(np.float32)
-                        if sfg.clean_bg_color is not None:
-                            sfg.clean_bg_color[hy1:hy2, hx1:hx2] = frame[hy1:hy2, hx1:hx2].astype(np.float32)
-                        alerted.add(cand.cand_id)
-                        healed.append({"frame": i, "center": [rcx, rcy], "area": int(area_b)})
-                        continue
-
                 alerted.add(cand.cand_id)
                 ev = {
                     "frame": i,
@@ -1070,10 +1115,6 @@ def main() -> int:
         with open(os.path.join(args.outdir, "suppressed.json"), "w", encoding="utf-8") as f:
             json.dump(suppressed, f, indent=2, ensure_ascii=False)
         print(f"[scene-memory] suppressed {len(suppressed)} candidate(s) -> suppressed.json")
-    if args.heal_revealed:
-        with open(os.path.join(args.outdir, "healed.json"), "w", encoding="utf-8") as f:
-            json.dump(healed, f, indent=2, ensure_ascii=False)
-        print(f"[heal-revealed] absorbed {len(healed)} revealed-background region(s) -> healed.json")
 
     for ev in events:
         print(

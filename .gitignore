@@ -8,7 +8,7 @@ __pycache__/
 *.onnx
 
 # Outputs and Data
-outputs*/
+out*/
 semantics*/
 eval/
 eval_reid/
@@ -23,3 +23,6 @@ logs_*.txt
 venv/
 env/
 *.pid
+
+results_full/
+diff*.txt

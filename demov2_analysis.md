@@ -279,12 +279,41 @@ Sweep gather trên v11: box to nhất **931px (g0) → 38 220px (g15) → 48 600
 
 ---
 
+## 3.7. Camera độ-phân-giải-cao + xe ra/vào (vid0355, 2560×1920) — proc-width decouple + adaptive dual-bg
+
+Video thật (ngõ sau, 2560×1920@15fps, máy giặt bỏ lại từ giây 3, ô tô đỗ-rồi-đi) lộ 3 vấn đề + cách giải:
+
+1. **Chậm ~16× (0.6 FPS)** = per-pixel ops trên 2560×1920. → **`--proc-width 640`** (BGS/FSM ở 640) + **`--sem-proc-width 960`** (YOLO chi tiết, mask resize về 640). Tách trục: việc nặng ở 640, detect ở 960. → ~4–6 FPS, area-threshold lại có nghĩa (FP giảm mạnh).
+2. **Máy giặt MISS** = đặt giây 3, trong warmup 20s → baked vào clean_bg. → **`--bg-learn-seconds 2.5`** (học nền TRƯỚC khi vật xuất hiện) + `--area-max` đủ lớn cho vật to. (Nguyên tắc chung: warmup phải kết thúc trước khi vật vào.)
+3. **Car-ghost FP** = ô tô đỗ trong warmup → baked → khi lái đi, vùng trống ≠ clean_bg → ghost. **6 vòng lặp** (đều ghi lại để khỏi lặp sai): warmup-mask per-frame (xe di chuyển → ko mask sạch) · heal-blend cường-độ (bóng outdoor) · at-alert-heal (ghost MERGE máy giặt → suppress giết máy giặt) · init-inpaint (vá vùng lớn ≠ nền-thật) · **departure-gated heal** (chỉ heal sau khi phát hiện departure → heal TRỄ → ghost kịp 5s, REGRESS) · **release-on-no-agent** (xe đỗ YOLO sót → release SỚM → ghost). **Cách ĐÚNG (`--heal-revealed 1`)**: YOLO trên clean_bg → mask agent baked → (a) **heal EMA VÔ ĐIỀU KIỆN** (lr 0.15) tại pixel mask mỗi frame → xe đi thì clean_bg hóa **nền THẬT** trong ~0.5s → ghost chết trước ngưỡng 5s; (b) **release tự-kết-thúc** = gỡ pixel về frozen sau `heal-release-s`(5s) khi **motion-đã-xảy-ra AND YOLO-không-còn-agent AND settled** → hết blind-spot vĩnh viễn, tín hiệu **motion+YOLO kép** chống release sớm; (c) **B: recompute mask sau relight rebuild**. Máy giặt ngoài mask → không đụng.
+
+> [!IMPORTANT]
+> **KQ cuối (heal vô-điều-kiện + release motion+YOLO + 5s)**: vid0355 car-ghost **biến mất** (2 ev = máy giặt) · vid0103@8s **sạch** (1 ev) · video8 **HIT/0 FP** (heal no-op vì 0% baked) · v11 ô **HIT**, FP 11→10. Cốt lõi: dùng **frame THẬT** học lại nền (ko inpaint/ko so-cường-độ) + **ko suppress candidate** (chỉ chỉnh clean_bg) nên ko dính merge ghost↔vật + **release kép motion+YOLO** chống cả release-sớm (xe đỗ YOLO sót) lẫn heal-trễ.
+>
+> **Giới hạn còn lại (perception, cố hữu)**: YOLO **sót** agent lúc warmup → vẫn ghost (P3-under); vật-tĩnh **nhận nhầm** là người (không bao giờ "rời") → không release → blind-spot cục bộ tại đó (P3-over). Né sạch = **ảnh nền trống chụp sẵn** (`--clean-bg-image`, chưa làm). Tất cả opt-in, default OFF (ABODA ko đổi khi tắt).
+
+## 3.8. Full-sweep ABODA toàn bộ 13 video (1 cấu hình chung) — báo cáo: [`results_full/BAOCAO_FULL_SWEEP.md`](../results_full/BAOCAO_FULL_SWEEP.md)
+
+Cấu hình chung `no-feedback --heal-revealed 1 --semantic-every 10` + defaults; chỉ khác warmup (vid0103=8s, vid0355=3s, còn lại 20s). Kết quả giữ trong `results_full/`.
+
+**Recall 12/12 (không miss thật).** 3 "MISS" tự-chấm ban đầu (v2/v4/v9) là **lỗi metric**: center-distance + tol cứng (~45px) báo nhầm khi box bắt đúng vật nhưng **tâm lệch 7–26px** (box nhỏ/lệch mép). Đối chiếu ảnh: v2 bắt **chính xác**; v4 bắt **1 góc nhỏ** (bbox kém, không miss); v9 bắt vật nhưng **báo 2 lần** (1 lần chủ còn đứng = owner-leaves gap). → **Chấm AOD phải dùng box-overlap/gap, không center-distance tol cứng** (đã chấm lại bằng gap≤25px).
+
+**FP ≈ 42, tập trung video7(21) + video11(12) + video6(7) = 40/42**; sáu video sạch (1,2,3,4,8,9) = 0 FP; vid0103/0355 sạch.
+
+> [!IMPORTANT]
+> **video7 = nguồn FP chính = ĐỔI SÁNG TỪ TỪ rơi vào KHE HỞ relight↔light-comp.** Cảnh: tối → bật đèn **tăng dần** đến sáng hẳn → **rồi mới** đặt vật. Log xác nhận: relight kích **1 lần** (qua dS=21) → rebuild clean_bg lúc còn **TỐI (V=133)**; sau đó sáng dần lên V≈157 với **dV≈24 < relight-dv 30** (không jump 1-phát đủ mạnh) **VÀ** sai-khác pixel rải rác **< light-comp coverage 15%** → **CẢ HAI nhánh sửa nền đều không kích** → nền-tối-đóng-băng vs cảnh-sáng → **13 static-FP nổ cùng lúc** ở frame 2028–2057 (~67.7s), tất cả `present_s=5.01`. `heal-revealed=0%` ở v7 → **KHÔNG liên quan**; proc-width/gather cũng không.
+>
+> **Eval cũ ~5 FP vs sweep này 25**: tình huống **ngay ranh giới** (dV 24 vs 30) + **pybgs không tất định** + relight rebuild rơi pha tối/sáng → kết quả **dao động mạnh**. Gốc là khe hở lighting (video6 cùng họ — đổi sáng cục bộ).
+>
+> **Hướng sửa**: (1) **continuous global-illumination compensation** — dịch sáng clean_bg theo độ lệch V toàn cục mỗi frame, đồng bộ sáng-dần mà không rebuild/re-bake, vật bỏ quên (lệch cục bộ) sống sót → trị gốc, không đụng recall; (2) relight theo drift tích lũy (hạ dV→~20); (3) tránh rebuild ở pha tối.
+
 ## 4. Các vấn đề chính (tổng hợp)
 
 ### 🔴 Nghiêm trọng
 
 | # | Vấn đề | File | Impact |
 |---|--------|------|--------|
+| 0 | **Khe hở ĐỔI-SÁNG-TỪ-TỪ** (nguồn FP chủ đạo — video7=21, video6=7) — sáng tăng dần không jump đủ relight-dv(30) cũng không đủ light-comp coverage(15%) → clean_bg-cũ đóng băng vs cảnh-mới → burst static-FP cùng lúc ở 5s. Xem §3.8. | `static_state.py` (relight/light-comp) | **FP cao + dao động giữa các lần chạy** |
 | 1 | **instance-feedback miss video1** — FG-protect giữ person area quá lâu, vật không chuyển static | `semantic_feedback.py` L59 | Miss detection |
 | 2 | **clean_bg leak khi ViBE flicker** — moving gate nhất thời True → static_fg False → clean_bg update tại pixel vật | `static_state.py` L276 | Vật dần bị absorb |
 | 3 | **God-file 900 dòng** — untestable, unmaintainable | `run_rtsbs_aod.py` | Engineering debt |
