@@ -31,6 +31,7 @@ def load_gt() -> dict[str, dict]:
             objs.append({
                 "center": (x + w / 2.0, y + h / 2.0),
                 "abandon_frame": obj["abandon_frame"],
+                "owner_leave_frame": obj.get("owner_leave_frame", obj["abandon_frame"]),
                 "tol": max(45.0, 0.6 * (w * h) ** 0.5),  # localization slack ~ object scale
             })
         gt[v["video_id"]] = {"objects": objs, "fps": v["fps"]}
@@ -73,8 +74,10 @@ def score(events: list[dict], g: dict) -> dict:
     for o in g["objects"]:
         cx, cy = o["center"]
         tol = o["tol"]
+        owner_leave = o["owner_leave_frame"]
         near = [k for k, e in enumerate(events)
-                if ((e["center"][0] - cx) ** 2 + (e["center"][1] - cy) ** 2) ** 0.5 <= tol]
+                if ((e["center"][0] - cx) ** 2 + (e["center"][1] - cy) ** 2) ** 0.5 <= tol
+                and e["frame"] >= owner_leave]
         used.update(near)
         first = min((events[k]["frame"] for k in near), default=None)
         lat = round((first - o["abandon_frame"]) / max(1e-3, fps), 1) if first is not None else None
