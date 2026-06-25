@@ -24,13 +24,22 @@ class StaticStateConfig:
     motion_source: str = "framediff"  # framediff | external (rtsbs/raw-vibe passed in)
     persist_s: float = 2.0            # persistent-diff >= this -> protect clean_bg from absorbing it
     light_comp: bool = True           # re-baseline clean_bg when global lighting coverage is high
+    light_norm: bool = False          # continuous global-illumination compensation (gain+offset re-baseline
+                                      #   each frame from background pixels). EXPERIMENTAL/default-OFF: a single
+                                      #   global affine can't fix SPATIALLY non-uniform lighting (video7 lights
+                                      #   on corner-by-corner) and costs ~2x runtime even when it ends up no-op.
+                                      #   For spatial lighting use relight (full rebuild) instead.
+    light_norm_min_shift: float = 3.0 # only act when the fitted global shift exceeds this (luma units); else no-op
     heal_cov: float = 0.15
     heal_alpha: float = 1.0
     heal_alpha_dark: float = 0.05
     dark_s_thresh: float = 15.0
     relight: bool = True              # rebuild clean_bg on a global lighting-mode switch
-    relight_dv: float = 30.0
+    relight_dv: float = 20.0          # |curV-refV| over this (cumulative since last rebuild) = diverged
     relight_ds: float = 12.0
+    relight_stable_dv: float = 2.0    # only rebuild once the new lighting has STABILISED (frame-to-frame
+                                      #   |dV| <= this), so we re-median the final lit scene, not a mid-ramp
+                                      #   value. Detection is paused (not rebuilt) while still ramping.
     relight_hold: int = 15
     relearn_s: float = 2.0
     motion_to_static: bool = False    # a candidate must have had motion (deposited) before going static
@@ -86,6 +95,7 @@ class StaticForegroundState:
         # relight state
         self.ref_V: float | None = None
         self.ref_S: float | None = None
+        self._prev_V: float | None = None   # previous-frame mean V, to detect when lighting has stabilised
         self._switch_count = 0
         self._relearning = False
         self._relearn_left = 0
@@ -122,8 +132,16 @@ class StaticForegroundState:
         curV = float(gray.mean())
         curS = float(cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)[..., 1].mean())
         diverging = (abs(curV - self.ref_V) > self.cfg.relight_dv) or (abs(curS - self.ref_S) > self.cfg.relight_ds)
+        # frame-to-frame stability: while the lights are still RAMPING, |dV| is large -> wait;
+        # only when the new level has plateaued do we re-median it (avoids locking in a mid-ramp
+        # / dark value the way a fixed hold-count would).
+        stable = (self._prev_V is None) or (abs(curV - self._prev_V) <= self.cfg.relight_stable_dv)
+        self._prev_V = curV
         if diverging:
-            self._switch_count += 1
+            if stable:
+                self._switch_count += 1     # count consecutive STABLE diverged frames
+            else:
+                self._switch_count = 0       # still ramping -> restart the plateau hold
             if self._switch_count >= self.cfg.relight_hold:
                 self._relearning = True
                 self._relearn_left = self.relearn_frames - 1
@@ -131,9 +149,9 @@ class StaticForegroundState:
                 self._relearn_buf = [gray.copy()]
                 self._relearn_buf_c = [frame.astype(np.float32)]
                 print(f"\n[RELIGHT] lighting switch (dV={abs(curV-self.ref_V):.0f} "
-                      f"dS={abs(curS-self.ref_S):.0f}) -> rebuilding clean_bg {self.relearn_frames}f...", flush=True)
+                      f"dS={abs(curS-self.ref_S):.0f}, stabilised) -> rebuilding clean_bg {self.relearn_frames}f...", flush=True)
             self._prev_gray = gray.copy()
-            return True
+            return True                      # pause detection throughout the lighting transition
         self._switch_count = 0
         return False
 
@@ -152,6 +170,37 @@ class StaticForegroundState:
         self._relearn_buf = []
         self._relearn_buf_c = []
         print(f"[RELIGHT] done: new clean_bg (V={self.ref_V:.0f} S={self.ref_S:.0f})", flush=True)
+
+    def _light_normalize(self, gray, frame_bgr, protect_persist, protect_mask):
+        """Re-baseline clean_bg by a robust global affine fit from background pixels. See caller."""
+        cfg = self.cfg
+        pre = cv2.absdiff(gray, self.clean_bg)
+        bgm = (pre < cfg.th_diff) & (~protect_persist)   # likely-background (exclude the object)
+        if protect_mask is not None:
+            bgm &= ~protect_mask
+        if int(bgm.sum()) < int(0.10 * bgm.size):         # not enough background to trust the fit
+            return
+        cb = self.clean_bg[bgm].astype(np.float32)
+        gg = gray[bgm].astype(np.float32)
+        if cb.size > 20000:                               # subsample for speed (the fit is global)
+            idx = np.random.randint(0, cb.size, 20000)
+            cb = cb[idx]; gg = gg[idx]
+        mcb = float(cb.mean()); mgg = float(gg.mean())
+        vcb = float(((cb - mcb) ** 2).mean())
+        if vcb <= 1e-3:
+            return
+        gain = float(((cb - mcb) * (gg - mgg)).mean() / vcb)
+        gain = min(2.0, max(0.5, gain))
+        off = mgg - gain * mcb
+        off = min(60.0, max(-60.0, off))
+        # magnitude of the implied shift at mid-grey; ignore noise-level fits
+        if abs(gain - 1.0) * 128.0 + abs(off) < cfg.light_norm_min_shift:
+            return
+        self.clean_bg = np.clip(gain * self.clean_bg + off, 0.0, 255.0).astype(np.float32)
+        if self.clean_bg_color is not None:
+            self.clean_bg_color = np.clip(gain * self.clean_bg_color + off, 0.0, 255.0).astype(np.float32)
+        if self.ref_V is not None:                        # keep the relight reference in sync
+            self.ref_V = float(self.clean_bg.mean())
 
     def _zeros_result(self) -> dict[str, np.ndarray]:
         z = np.zeros((self.height, self.width), dtype=np.uint8)
@@ -189,6 +238,17 @@ class StaticForegroundState:
             stuff_b = np.zeros((self.height, self.width), dtype=bool)
 
         protect_persist = (self._persist >= self.persist_thresh) & (~stuff_b)
+
+        # --- continuous global-illumination compensation ---
+        # A GRADUAL/global lighting change (lights ramping on, dusk) shifts the whole scene, but
+        # the frozen clean_bg stays put -> high-contrast edges exceed th_diff and fire as static
+        # FP, while global coverage stays under the light_comp trigger and the per-step jump stays
+        # under relight_dv. Fix: fit a robust global affine (gain*cb + off) from BACKGROUND pixels
+        # (|gray-clean_bg| < th_diff) and re-baseline clean_bg by it every frame. A real object is
+        # a local minority -> excluded from the fit -> its diff (vs the re-lit GROUND in clean_bg)
+        # is preserved -> still detected. No-op when lighting is stable (shift < min_shift).
+        if cfg.light_norm:
+            self._light_normalize(gray, frame_bgr, protect_persist, protect_mask)
 
         diff = cv2.absdiff(gray, self.clean_bg)
         newdiff = (diff >= cfg.th_diff).astype(np.uint8)

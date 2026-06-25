@@ -145,6 +145,30 @@ class OnlinePSPNet:
         return semantic
 
 
+def resolve_yolo_weights(weights: str, imgsz: int) -> str:
+    """Make an exported-backend default safe on a fresh checkout: if an OpenVINO dir / ONNX file is
+    requested but missing, auto-export it from the matching ``.pt`` (ultralytics downloads the .pt if
+    needed). If the export backend isn't installed, fall back to the ``.pt`` (PyTorch) so the run still
+    works — just without the speedup."""
+    if os.path.exists(weights):
+        return weights
+    w = weights.rstrip("/\\")
+    if w.endswith("_openvino_model"):
+        stem, fmt = w[: -len("_openvino_model")], "openvino"
+    elif w.endswith(".onnx"):
+        stem, fmt = w[: -len(".onnx")], "onnx"
+    else:
+        return weights  # a .pt / hub name -> let ultralytics auto-download
+    pt = stem + ".pt"
+    try:
+        from ultralytics import YOLO
+        print(f"[semantic] '{weights}' not found -> exporting {fmt} from {pt} (imgsz={imgsz})...", flush=True)
+        return str(YOLO(pt).export(format=fmt, imgsz=int(imgsz)))
+    except Exception as e:
+        print(f"[semantic] WARN: {fmt} export failed ({type(e).__name__}: {e}) -> fallback to {pt}", flush=True)
+        return pt
+
+
 class OnlineYoloSeg:
     """Fast instance-segmentation semantic source (YOLO-seg, COCO classes).
 
@@ -171,7 +195,11 @@ class OnlineYoloSeg:
         from core.semantic_lut import build_class_set, build_moving_class_set, build_object_class_set
 
         self.model = YOLO(weights)
-        raw_names = self.model.model.names if hasattr(self.model, "model") else self.model.names
+        # .names works for both .pt and exported backends (.onnx/openvino embed it in metadata);
+        # for .onnx self.model.model is a str path, so don't reach into .model.model.
+        raw_names = getattr(self.model, "names", None)
+        if not raw_names:
+            raw_names = getattr(getattr(self.model, "model", None), "names", {})
         self.names = {int(k): str(v) for k, v in raw_names.items()}
         self.imgsz = int(imgsz)
         self.conf = float(conf)
@@ -329,7 +357,11 @@ def parse_args():
     ap.add_argument("--pspnet-checkpoint", default="")
     ap.add_argument("--pspnet-device", default="cuda:0")
     ap.add_argument("--pspnet-min-conf", type=float, default=0.0)
-    ap.add_argument("--yolo-weights", default="yolo26n-seg.pt", help="ultralytics instance-seg weights")
+    ap.add_argument("--yolo-weights", default="yolo26s-seg_openvino_model",
+                    help="ultralytics instance-seg weights. Default = OpenVINO export of yolo26s-seg (~1.5x faster "
+                         "on CPU than .pt, same accuracy); auto-exported from yolo26s-seg.pt on first run, falls "
+                         "back to PyTorch if the openvino package is missing. Use yolo26s-seg.pt for plain PyTorch, "
+                         "yolo26n-seg.pt to trade person-recall for speed, or a .onnx export.")
     ap.add_argument("--yolo-imgsz", type=int, default=960)
     ap.add_argument("--yolo-conf", type=float, default=0.15)
     ap.add_argument("--yolo-device", default="cpu", help="cpu / 0 / cuda:0")
@@ -367,7 +399,9 @@ def parse_args():
     ap.add_argument("--aod-tstatic-s", type=float, default=1.0,
                     help="seconds a pixel must stay static (and inanimate) before it becomes an abandoned candidate")
     ap.add_argument("--tau-animate", type=float, default=0.3,
-                    help="P(person/vehicle/animal) >= this -> treat pixel as animate and reject from AOD")
+                    help="P(person/vehicle/animal) >= this -> treat pixel as animate and reject from AOD. "
+                         "NOTE: lowering this can't recover a person YOLO never emitted (empty map); the real "
+                         "lever for person recall is the YOLO model/conf, not this downstream threshold.")
     ap.add_argument("--dilate-animate", type=int, default=2,
                     help="dilate the animate(person/vehicle) reject mask by this many px (demov1 used 12 for person)")
     ap.add_argument("--tau-object", type=float, default=0.30,
@@ -384,13 +418,22 @@ def parse_args():
     ap.add_argument("--persist-s", type=float, default=2.0,
                     help="persistent-diff >= this many s -> protect clean_bg from absorbing it (don't eat static object)")
     ap.add_argument("--light-comp", type=int, default=1, help="1=re-baseline clean_bg on high-coverage lighting events")
+    ap.add_argument("--light-norm", type=int, default=0,
+                    help="EXPERIMENTAL (default OFF): continuous global-illumination compensation (global affine "
+                         "gain+offset re-baseline from background each frame). Ineffective for SPATIALLY non-uniform "
+                         "lighting (e.g. lights ramping on corner-by-corner) and ~2x slower even when idle. For "
+                         "gradual lighting use relight (full rebuild) tuning instead.")
     ap.add_argument("--heal-cov", type=float, default=0.15)
     ap.add_argument("--heal-alpha", type=float, default=1.0)
     ap.add_argument("--heal-alpha-dark", type=float, default=0.05)
     ap.add_argument("--dark-s-thresh", type=float, default=15.0)
     ap.add_argument("--relight", type=int, default=1, help="1=rebuild clean_bg on a global lighting-mode switch (day/night, lights on/off)")
-    ap.add_argument("--relight-dv", type=float, default=30.0)
+    ap.add_argument("--relight-dv", type=float, default=20.0,
+                    help="cumulative |meanV-ref| over this = lighting diverged (lower catches GRADUAL ramps)")
     ap.add_argument("--relight-ds", type=float, default=12.0)
+    ap.add_argument("--relight-stable-dv", type=float, default=2.0,
+                    help="only rebuild once frame-to-frame |dV| <= this (lighting plateaued) so the rebuild "
+                         "captures the FINAL lit scene, not a mid-ramp value; detection pauses while ramping")
     ap.add_argument("--relearn-s", type=float, default=2.0)
 
     # v2c runner features: dedup, owner-gate, crowd, bbox refine
@@ -409,8 +452,14 @@ def parse_args():
                          "long enough that clean_bg fully heals first so no residual ghost. fps-independent.")
     ap.add_argument("--dedup-dist", type=float, default=40.0, help="two alerts closer than this (px) = same location")
     ap.add_argument("--dedup-clear-s", type=float, default=3.0, help="object must leave a spot (newdiff empty) this long before a new alert there")
+    ap.add_argument("--debug-owner", type=int, default=0,
+                    help="1=print an [OWNER-DBG] line at each alert: density / owner-gate active / person-overlap / "
+                         "distance to nearest detected person / frames since a person was last near. Explains why "
+                         "an alert passed the owner-gate (e.g. owner present but YOLO missed them, or scene crowded).")
     ap.add_argument("--owner-gate", type=int, default=1, help="1=sparse scenes only: delay alert until the object's reach is clear of people")
-    ap.add_argument("--owner-clear-s", type=float, default=3.0)
+    ap.add_argument("--owner-clear-s", type=float, default=3.0,
+                    help="defer the alert until the object's reach has been clear of people for this long "
+                         "(bridges YOLO person-recall dropouts; also the 'unattended' threshold)")
     ap.add_argument("--owner-margin", type=int, default=15)
     ap.add_argument("--owner-k", type=float, default=0.8)
     ap.add_argument("--crowd-n", type=int, default=6, help="avg >= this many person/vehicle blobs -> crowded -> disable owner-gate")
@@ -611,6 +660,7 @@ def main() -> int:
     elif args.semantic_mode == "online-yoloseg":
         animate_terms = {t.strip().lower() for t in args.yolo_animate_classes.split(",") if t.strip()} or None
         object_terms = {t.strip().lower() for t in args.yolo_object_classes.split(",") if t.strip()} or None
+        args.yolo_weights = resolve_yolo_weights(args.yolo_weights, args.yolo_imgsz)
         online_semantic = OnlineYoloSeg(
             args.yolo_weights,
             args.yolo_imgsz,
@@ -696,6 +746,7 @@ def main() -> int:
             motion_source=args.aod_motion_source,
             persist_s=args.persist_s,
             light_comp=bool(args.light_comp),
+            light_norm=bool(args.light_norm),
             heal_cov=args.heal_cov,
             heal_alpha=args.heal_alpha,
             heal_alpha_dark=args.heal_alpha_dark,
@@ -703,6 +754,7 @@ def main() -> int:
             relight=bool(args.relight),
             relight_dv=args.relight_dv,
             relight_ds=args.relight_ds,
+            relight_stable_dv=args.relight_stable_dv,
             relearn_s=args.relearn_s,
             motion_to_static=bool(args.motion_to_static),
             motion_reset_s=args.motion_reset_s,
@@ -775,6 +827,8 @@ def main() -> int:
     density = "low"
     alerted_locs: list[list[int]] = []          # [cx, cy, last_seen_frame] for location dedup
     person_near_frame: dict[int, int] = {}       # cand_id -> last frame a person was within reach
+    person_seen = np.full((h, w), -(10 ** 9), dtype=np.int64)  # per-pixel last frame a person was detected
+    person_seen_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21))     # generous stamp (seg masks are tight)
     gather_k = (cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (args.gather_px, args.gather_px))
                 if args.gather_px > 0 else None)
     person_dil = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (max(1, args.person_dilate),) * 2)
@@ -929,6 +983,11 @@ def main() -> int:
         if ran_semantic and person_b is not None:
             n_blobs = cv2.connectedComponents(person_b.astype(np.uint8))[0] - 1
             density = crowd.update(max(0, n_blobs))
+            # spatial-temporal person-presence memory: stamp this frame where a person is detected
+            # (dilated). The owner-gate queries this so a YOLO flicker/miss at the exact alert frame
+            # doesn't undo "a person was standing here seconds ago" -> robust to person-recall dropouts.
+            if person_b.any():
+                person_seen[cv2.dilate(person_b.astype(np.uint8), person_seen_k) > 0] = i
 
         # Prop1 person-hull: in crowds, bridge adjacent people (close) but punch holes at
         # static candidates (stat_new) so a deposited object inside the cluster survives.
@@ -1013,10 +1072,15 @@ def main() -> int:
                 if any(np.hypot(rcx - L[0], rcy - L[1]) < args.dedup_dist for L in alerted_locs):
                     alerted.add(cand.cand_id)
                     continue
-                # owner-gate: wait until the object's reach is clear of people. Local mode
-                # applies even in crowds, but a timeout prevents deferring forever.
+                # owner-gate: wait until the object's reach has been clear of people for
+                # owner_clear_s. Query the spatial-temporal person-presence map in a reach-radius
+                # window (robust to YOLO flicker + cand_id churn). Local mode applies even in
+                # crowds, but a timeout prevents deferring forever.
                 if owner_gate_active:
-                    last_near = person_near_frame.get(cand.cand_id, -10 ** 9)
+                    reach = int(max(args.owner_margin, args.owner_k * ((b[2] - b[0]) * (b[3] - b[1])) ** 0.5))
+                    wy0, wy1 = max(0, rcy - reach), min(h, rcy + reach + 1)
+                    wx0, wx1 = max(0, rcx - reach), min(w, rcx + reach + 1)
+                    last_near = int(person_seen[wy0:wy1, wx0:wx1].max()) if (wy1 > wy0 and wx1 > wx0) else -(10 ** 9)
                     waited = t_now - static_since[cand.cand_id]
                     if (i - last_near) < args.owner_clear_s * fps and waited < args.owner_timeout_s:
                         continue
@@ -1043,6 +1107,15 @@ def main() -> int:
                             cv2.imwrite(os.path.join(args.outdir, f"scene_suppress_f{i}_c{rcx}_{rcy}.jpg"), dbg)
                         continue
 
+                if args.debug_owner:
+                    rch = int(max(args.owner_margin, args.owner_k * ((b[2] - b[0]) * (b[3] - b[1])) ** 0.5))
+                    qy0, qy1 = max(0, rcy - rch), min(h, rcy + rch + 1)
+                    qx0, qx1 = max(0, rcx - rch), min(w, rcx + rch + 1)
+                    ln = int(person_seen[qy0:qy1, qx0:qx1].max()) if (qy1 > qy0 and qx1 > qx0) else -(10 ** 9)
+                    since = (i - ln) if ln > -10 ** 8 else None
+                    print(f"[OWNER-DBG] f{i} c({rcx},{rcy}) density={density} gate_active={owner_gate_active} "
+                          f"reach={rch}px since_person_near(in reach)={since}f "
+                          f"(owner_clear={args.owner_clear_s}s={args.owner_clear_s*fps:.0f}f)", flush=True)
                 alerted.add(cand.cand_id)
                 ev = {
                     "frame": i,
@@ -1072,6 +1145,9 @@ def main() -> int:
             cv2.imwrite(os.path.join(args.outdir, f"stuff_f{i}.jpg"), aod["stuff"])
             cv2.imwrite(os.path.join(args.outdir, f"tight_f{i}.jpg"), aod["tight"])
             cv2.imwrite(os.path.join(args.outdir, f"cleanbg_f{i}.jpg"), sfg.clean_bg.astype(np.uint8))
+            cv2.imwrite(os.path.join(args.outdir, f"frame_f{i}.jpg"), frame)  # actual scene (compare vs cleanbg)
+            if sfg.clean_bg_color is not None:
+                cv2.imwrite(os.path.join(args.outdir, f"cleanbg_color_f{i}.jpg"), sfg.clean_bg_color.astype(np.uint8))
             cv2.imwrite(
                 os.path.join(args.outdir, f"age_f{i}.jpg"),
                 cv2.applyColorMap(aod["age"], cv2.COLORMAP_TURBO),

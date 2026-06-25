@@ -100,7 +100,22 @@ tools/                  # sinh dense semantic (SegFormer/PSPNet), batch driver
 ```
 
 ## Output (mỗi `--save-masks-every`)
-`events.json` · `alert_f*.jpg` · `raw_vibe_f*` (ViBE) · `rtsbs_f*` (sau feedback) · `semantic_f*.png`/`semantic_vis_f*` (SegFormer) · `statnew/newdiff/fg/staticfg/moving/keep/stuff/tight/age` · `cleanbg_f*`.
+`events.json` · `alert_f*.jpg` · `raw_vibe_f*` (ViBE) · `rtsbs_f*` (sau feedback) · `semantic_f*.png`/`semantic_vis_f*` (SegFormer) · `statnew/newdiff/fg/staticfg/moving/keep/stuff/tight/age` · `cleanbg_f*` · `frame_f*`/`cleanbg_color_f*`. (`--debug-owner 1` in chẩn đoán owner-gate mỗi alert.)
+
+## Tăng tốc YOLO trên CPU — OpenVINO (DEFAULT)
+Model `yolo26s-seg` (recall người tốt cho owner-gate) chậm ~2× so với nano. Default đã chuyển sang **OpenVINO FP32** để bù: `--yolo-weights yolo26s-seg_openvino_model`.
+- **Tự lo**: lần chạy đầu nếu chưa có folder → **tự export** từ `yolo26s-seg.pt` (ultralytics tự tải .pt); nếu thiếu package `openvino` → **fallback PyTorch** (`.pt`) để vẫn chạy. Fresh checkout không lỗi.
+- Cài để có tốc độ: `pip install openvino` (hoặc `onnxruntime` cho .onnx).
+
+Benchmark CPU (v7/v11), **độ chính xác không đổi** (v7 events identical cả 3):
+| Backend | video7 | video11 |
+|---|---|---|
+| PyTorch `.pt` | 5.6 FPS | 4.6 FPS |
+| ONNX FP32 (`.onnx`) | 6.5 (1.16×) | 4.9 (1.07×) |
+| **OpenVINO FP32 (default)** | **8.4 (1.50×)** | **7.2 (1.57×)** |
+- **OpenVINO ~1.5× = tốt nhất trên CPU** — xóa gần hết penalty nano→s (được recall model-s ở tốc độ ~nano). ONNX-CPU chỉ ~1.1×.
+- Đổi backend: `--yolo-weights yolo26s-seg.pt` (PyTorch thuần) · `yolo26n-seg.pt` (nano, nhanh nhưng recall kém) · `*.onnx`.
+- **KHÔNG dùng INT8** (nhanh hơn nhưng giảm recall → hỏng đúng nút thắt person-recall). Đòn lớn hơn: `--yolo-imgsz 960→640` (phải test lại recall).
 
 ## Kết quả & giới hạn
 
@@ -110,8 +125,13 @@ tools/                  # sinh dense semantic (SegFormer/PSPNet), batch driver
 Chạy `no-feedback --heal-revealed 1 --semantic-every 10` + defaults, chỉ khác warmup (vid0103=8s, vid0355=3s, còn lại 20s):
 - **Recall 12/12** (không miss thật). 3 "MISS" ban đầu (v2/v4/v9) là **lỗi chấm điểm** (center-distance tol quá chặt; box bắt được nhưng tâm lệch 7–26px). → chấm AOD phải dùng **box-overlap**, không tol cứng.
 - **FP ≈ 42**, tập trung **video7 (21) + video11 (12) + video6 (7) = 40/42**. Sáu video sạch (1,2,3,4,8,9) = **0 FP**. vid0103/0355 sạch (car-ghost đã trị).
-- **video7 = nguồn FP chính = đổi sáng TỪ TỪ** (tối→bật đèn tăng dần→sáng hẳn→mới đặt vật): relight rebuild clean_bg lúc còn **tối (V=133)**, rồi sáng dần lên V≈157 với **dV≈24 < relight-dv 30** và sai-khác **< light-comp 15% coverage** → **cả 2 nhánh sửa nền không kích** → nền-tối-đóng-băng vs cảnh-sáng → **13 FP nổ cùng lúc** ở 5s. `heal-revealed=0%` ở đây nên **không liên quan**. video6 cùng họ (đổi sáng cục bộ). → cần **global-illumination compensation** (đồng bộ độ sáng clean_bg liên tục) cho khe hở này.
-- **video9**: bắt vật nhưng **báo 2 lần**, 1 lần lúc **chủ còn đứng cạnh** = lỗ hổng **owner-leaves**.
+- **video7 = đổi sáng TỪ TỪ** (tối→bật đèn tăng dần→sáng hẳn→mới đặt vật): relight cũ rebuild clean_bg lúc còn **tối (V=133)** giữa ramp, rồi sáng dần dV≈24 **< relight-dv 30** & rải rác **< light-comp 15%** → nền-tối-đóng-băng vs cảnh-sáng → 13 FP nổ ở 5s. → **ĐÃ SỬA (xem dưới).**
+- **video9**: bắt vật nhưng **báo 2 lần**, 1 lần lúc **chủ còn đứng cạnh** = lỗ hổng **owner-leaves** (cùng họ với video7, đã cải thiện bằng presence-memory).
+
+### 2 FIX sau full-sweep (defaults mới) — kết quả `results_relight/*_s`
+**FIX 1 — khe hở đổi-sáng-từ-từ:** đã thử `--light-norm` (global affine) → **THẤT BẠI** (sáng không-đồng-đều + ~2× chậm → default OFF). Đòn đúng = **tune relight**: `--relight-dv 30→20` + **`--relight-stable-dv 2.0`** (chỉ rebuild khi sáng ĐÃ ổn định/plateau; đang ramp thì pause, không rebuild → không khóa nền tối). → **video7 21→2 FP, video6 7→5 FP, không tốn tốc độ.**
+
+**FIX 2 — owner-gate báo khi chủ còn đứng = YOLO person-recall** (không phải logic gate): nano `yolo26n-seg` emit map RỖNG tại frame alert → gate bị bỏ đói (tau downstream vô dụng). Đòn: (a) **`--yolo-weights yolo26n-seg → yolo26s-seg`** default (recall tốt hơn, **~2× chậm CPU**); (b) **person-presence memory** (owner-gate nhớ "có người gần đây trong `owner_clear_s`" theo không-gian, bền với YOLO flicker). → **túi video7 hoãn đến khi chủ rời** (báo hợp lệ); mọi vật vẫn HIT. `--debug-owner 1` để in chẩn đoán owner-gate mỗi alert.
 
 **`--vibe-timeout`** (mặc định **150f ≈ 5s**, chỉ áp ControlledViBE = `instance`/`dense`; `no-feedback` dùng pybgs nên không đụng): ép hấp thụ FG kẹt → vật bị FG-protect nổi lên được, nhưng nhả **KHÔNG chọn lọc** nên clutter cũng nổi → tăng FP. Đo trên 3 cảnh:
 

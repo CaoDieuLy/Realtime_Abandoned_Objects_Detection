@@ -305,7 +305,34 @@ Cấu hình chung `no-feedback --heal-revealed 1 --semantic-every 10` + defaults
 >
 > **Eval cũ ~5 FP vs sweep này 25**: tình huống **ngay ranh giới** (dV 24 vs 30) + **pybgs không tất định** + relight rebuild rơi pha tối/sáng → kết quả **dao động mạnh**. Gốc là khe hở lighting (video6 cùng họ — đổi sáng cục bộ).
 >
-> **Hướng sửa**: (1) **continuous global-illumination compensation** — dịch sáng clean_bg theo độ lệch V toàn cục mỗi frame, đồng bộ sáng-dần mà không rebuild/re-bake, vật bỏ quên (lệch cục bộ) sống sót → trị gốc, không đụng recall; (2) relight theo drift tích lũy (hạ dV→~20); (3) tránh rebuild ở pha tối.
+> **ĐÃ SỬA — xem §3.9.** (Global-illumination compensation `--light-norm` đã thử → THẤT BẠI: sáng không-đồng-đều về không-gian + ~2× chậm → default OFF. Đòn đúng = tune relight.)
+
+## 3.9. SỬA khe-hở-lighting + owner-gate (sau full-sweep) — kết quả trong `results_relight/*_s`
+
+### FIX 1 — khe hở đổi-sáng-từ-từ (relight tuning) ✅
+- **`--light-norm` (global affine gain+offset) THẤT BẠI**: video7 bật đèn **từng góc** = sáng không-đồng-đều → 1 affine TOÀN CỤC chỉ xóa trung bình, burst còn (25→18); +**~2× chậm kể cả idle** → **default OFF** (giữ làm opt-in cho camera sáng-đồng-đều).
+- **Đòn ĐÚNG = tune relight (full rebuild re-median bắt đúng mẫu sáng theo vùng)**: `relight_dv 30→20` + **`relight_stable_dv=2.0`** = chỉ rebuild khi frame-to-frame `|dV|≤2` (sáng ĐÃ plateau); đang ramp thì **PAUSE detection, KHÔNG rebuild** → không khóa nhầm nền-tối giữa ramp (lỗi cũ rebuild ở V=133). **KQ: video7 21→2 FP, video6 7→5 FP, KHÔNG tốn tốc độ.** clean_bg theo sát: f1400 tối/tối → f1550,f1750 sáng/sáng khớp. 2 FP@68s còn lại = residual cục bộ nhỏ.
+
+### FIX 2 — owner-gate "báo khi chủ còn đứng cạnh" = YOLO person-recall ✅
+- `--debug-owner` chứng minh: tại frame alert **person mask RỖNG** — nano `yolo26n-seg`@conf0.15 KHÔNG emit người (chỉ 8/97 frame, thường <tau). **tau ở downstream → vô dụng** (đo 0.3/0.2/0.1 y hệt: không tạo detection từ map trống). Lỗi là **recall**, không phải logic gate.
+- **Đòn**: (1) **`yolo26n-seg` → `yolo26s-seg` default** (recall người tốt hơn nhiều; **~2× chậm CPU**: v1 6.8→3.6, v8 10.5→5.6 FPS — chấp nhận đổi lấy đúng); (2) **person-presence memory** = `person_seen[h,w]` frame-stamp nơi YOLO thấy người (dilate 21px); owner-gate query cửa-sổ bán-kính `reach` lấy recency, hoãn nếu < `owner_clear_s` → **bền với YOLO flicker + cand_id churn** (thay `person_near_frame` keyed-cand_id cũ).
+- **KQ video7**: túi **HOÃN f3758 (chủ đứng) → f3940 (chủ đã rời)** = cảnh báo hợp lệ. Mọi vật v1/v8/v11/vid0355 **vẫn HIT** (memory không over-defer). v7 cuối **25ev/21FP → 4ev** (2 lighting-residual + 1 leg-FP chân-chủ + 1 túi-hoãn-đúng). **leg-FP còn lại** = recall vẫn sót ngay chân người (khe hở 5s, downward-dilation + owner_clear 5s ĐÃ THỬ → không trị được vì là gap TEMPORAL; đã revert) → cần model lớn hơn / temporal dài hơn.
+
+## 3.10. Tăng tốc YOLO trên CPU — backend benchmark (yolo26s-seg, v7/v11)
+
+Bù penalty nano→s (~2× chậm) bằng backend nhanh hơn. Drop-in qua ultralytics (chỉ sửa 1 dòng `.names` cho backend export; `_paint` chạy y nguyên). **FP32 — KHÔNG INT8** (INT8 nhanh 2-4× nhưng giảm recall → hỏng đúng nút thắt person-recall).
+
+| Backend | video7 | video11 | Accuracy |
+|---|---|---|---|
+| PyTorch `.pt` | 5.6 FPS (1.00×) | 4.6 FPS (1.00×) | baseline |
+| ONNX FP32 | 6.5 (1.16×) | 4.9 (1.07×) | v7 **identical**; v11 HIT giữ |
+| **OpenVINO FP32** | **8.4 (1.50×)** | **7.2 (1.57×)** | v7 **identical**; v11 HIT giữ, FP trong nhiễu |
+
+- **OpenVINO ~1.5× = lựa chọn CPU tốt nhất → ĐÃ SET LÀM DEFAULT** (`--yolo-weights yolo26s-seg_openvino_model`) — gần như xóa hết penalty nano→s (v11 OpenVINO 7.2 **>** nano-PyTorch 6.5; v7 8.4 ≈ nano 9.6) → **được recall model-s ở tốc độ ~nano**. ONNX-CPU chỉ ~1.1× (ORT-CPU không nhanh hơn PyTorch-CPU nhiều cho model nhỏ).
+- **An toàn fresh-checkout**: `resolve_yolo_weights()` tự export OpenVINO/ONNX từ `.pt` nếu thiếu folder; thiếu package `openvino` → fallback PyTorch. Sửa 1 dòng `.names` (với .onnx `self.model.model` là str).
+- Sai khác events ở v11 (FP 11/10/9) = **float-diff backend + pybgs không-tất-định**, không phải hiệu ứng tin cậy; **HIT giữ nguyên cả 3**.
+- Export: `yolo export model=yolo26s-seg.pt format={onnx|openvino} imgsz=960` → `--yolo-weights yolo26s-seg_openvino_model` (hoặc `.onnx`). Cần pip `openvino`/`onnxruntime`.
+- Đòn lớn hơn (chưa đo, có thể kết hợp): `--yolo-imgsz 960→736/640` (~bình phương) nhưng phải **test lại recall người**.
 
 ## 4. Các vấn đề chính (tổng hợp)
 
@@ -313,7 +340,7 @@ Cấu hình chung `no-feedback --heal-revealed 1 --semantic-every 10` + defaults
 
 | # | Vấn đề | File | Impact |
 |---|--------|------|--------|
-| 0 | **Khe hở ĐỔI-SÁNG-TỪ-TỪ** (nguồn FP chủ đạo — video7=21, video6=7) — sáng tăng dần không jump đủ relight-dv(30) cũng không đủ light-comp coverage(15%) → clean_bg-cũ đóng băng vs cảnh-mới → burst static-FP cùng lúc ở 5s. Xem §3.8. | `static_state.py` (relight/light-comp) | **FP cao + dao động giữa các lần chạy** |
+| 0 | ~~**Khe hở ĐỔI-SÁNG-TỪ-TỪ**~~ **ĐÃ SỬA (§3.9)** — relight tuning (`relight_dv 20` + `relight_stable_dv`): video7 21→2 FP, video6 7→5 FP, không tốn tốc độ. | `static_state.py` | ✅ Fixed |
 | 1 | **instance-feedback miss video1** — FG-protect giữ person area quá lâu, vật không chuyển static | `semantic_feedback.py` L59 | Miss detection |
 | 2 | **clean_bg leak khi ViBE flicker** — moving gate nhất thời True → static_fg False → clean_bg update tại pixel vật | `static_state.py` L276 | Vật dần bị absorb |
 | 3 | **God-file 900 dòng** — untestable, unmaintainable | `run_rtsbs_aod.py` | Engineering debt |
