@@ -39,10 +39,6 @@ except Exception:
     pass
 
 
-def resolve_default_video() -> str:
-    here = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.join(here, "..", "ABODA", "video11.avi")
-    return os.path.abspath(path)
 
 
 def draw_alert(frame: np.ndarray, bbox: list[int], text: str) -> np.ndarray:
@@ -321,7 +317,7 @@ def parse_args():
     common = ap.add_argument_group("common (most runs only set these)")
     advanced = ap.add_argument_group(
         "advanced (tuned defaults — change only if you know why)")
-    common.add_argument("--video", default=resolve_default_video())
+    common.add_argument("--video", default="", help="path to a video file from a FIXED camera (or use --camera-index)")
     common.add_argument("--camera-index", type=int, default=-1,
                     help="live camera index; >=0 uses webcam/camera instead of --video")
     advanced.add_argument("--camera-width", type=int, default=0, help="optional live camera capture width")
@@ -470,7 +466,10 @@ def parse_args():
                          "(bridges YOLO person-recall dropouts; also the 'unattended' threshold)")
     advanced.add_argument("--owner-margin", type=int, default=15)
     advanced.add_argument("--owner-k", type=float, default=0.8)
-    advanced.add_argument("--crowd-n", type=int, default=6, help="avg >= this many person/vehicle blobs -> crowded -> disable owner-gate")
+    advanced.add_argument("--crowd-n", type=int, default=10,
+                          help="avg >= this many person/vehicle blobs -> 'crowded' -> disable owner-gate "
+                               "(in a dense crowd a per-object owner check is unreliable). Raised 6->10 since "
+                               "yolo26s-seg detects more people than nano, so the blob count runs higher.")
     advanced.add_argument("--gather-px", type=int, default=5, help="CLOSE tight_mask this many px to merge fragments when refining the alert bbox; 0=off. "
                     "Default 5 = light join (covers a fragmented object) without over-merging a crowd into one giant box (v11).")
 
@@ -503,6 +502,9 @@ def parse_args():
 
     common.add_argument("--save-masks-every", type=int, default=0)
     args = ap.parse_args()
+
+    if not args.video and args.camera_index < 0:
+        ap.error("provide a source: --video <path-to-video> or --camera-index <n>")
 
     # --mode presets bundle the BGS / feedback / motion-gate axes into a coherent pipeline.
     if args.mode == "no-feedback":

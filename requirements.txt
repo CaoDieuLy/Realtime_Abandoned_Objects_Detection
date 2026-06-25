@@ -1,19 +1,25 @@
-# demov2 — abandoned-object detection (RT-SBS feedback + clean-background FSM)
+# demov2 — abandoned-object detection (clean-background FSM + semantic keep-gate)
 # Install: python -m pip install -r demov2/requirements.txt
 
 # --- Core (always required) ---
 numpy>=1.24
 opencv-python>=4.8
-numba>=0.59            # JIT for ControlledViBE.segmentation (fast CPU ViBE)
+ultralytics>=8.3       # YOLO-seg person/object detection (default weights: yolo26s-seg)
 
-# --- Instance semantic (modes: no-feedback, instance-feedback) ---
-ultralytics>=8.3       # YOLO-seg (yolo26n-seg.pt / yolov8*-seg)
+# --- CPU acceleration for YOLO (recommended) ---
+# Default --yolo-weights is an OpenVINO export of yolo26s-seg (~1.5x faster on CPU, same accuracy);
+# it is auto-exported from the .pt on first run. Without openvino installed the run still works (it
+# falls back to plain PyTorch). onnxruntime is only needed if you point --yolo-weights at a .onnx.
+openvino>=2024.0       # recommended (best CPU speed)
+# onnxruntime>=1.17     # optional, only for a .onnx backend
 
-# --- Fast C++ ViBE backend (mode: no-feedback, --bgs-backend pybgs) ---
-# Optional: the default "controlled" backend (numba) needs no pybgs.
+# --- Fast C++ ViBE backend (mode: no-feedback, the default --bgs-backend pybgs) ---
+# Optional: the "controlled" backend (numba) is an alternative and needs numba instead of pybgs.
 pybgs>=3.3
+numba>=0.59            # only for --bgs-backend controlled (instance/dense feedback)
 
-# --- Dense pixel semantic (mode: dense-feedback, SegFormer) ---
+# --- Dense pixel semantic (optional; mode: dense-feedback, swappable SegFormer/PSPNet) ---
+# Only needed if you run the dense-feedback mode or a dense semantic model.
 torch>=2.0
 transformers>=4.41
 safetensors>=0.4
