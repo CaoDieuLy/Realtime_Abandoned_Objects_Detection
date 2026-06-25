@@ -1,3 +1,7 @@
+"""StaticMatcher — track static-foreground blobs across frames into stable candidates. Greedy
+nearest-centroid matching with a short memory so a flickering blob keeps its id; each candidate
+accumulates the time-static evidence the FSM/runner need before firing an alert.
+"""
 from __future__ import annotations
 
 from collections import deque

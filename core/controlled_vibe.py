@@ -1,3 +1,8 @@
+"""ControlledViBE — a ViBe background-subtraction model that can accept an EXTERNALLY corrected
+foreground mask (RT-SBS semantic feedback) instead of only its own decision, and update its
+per-pixel sample buffers from that corrected mask. Segmentation is numba-accelerated
+(``_vibe_segment_njit``). Used by the instance-feedback / dense-feedback modes.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass

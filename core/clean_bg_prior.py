@@ -8,7 +8,6 @@ adaptive BGS model would absorb a static object.
 from __future__ import annotations
 
 import os
-import warnings
 
 import cv2
 import numpy as np
@@ -123,60 +122,3 @@ def build_camera_warmup_background(
 
     clean_bg = np.median(np.stack(grays, axis=0), axis=0).astype(np.float32)
     return clean_bg, frames, fps, 0
-
-
-def build_person_aware_clean_bg(
-    frames_bgr: list[np.ndarray],
-    animate_of,
-    tau16: float,
-    dilate_px: int = 8,
-    max_frames: int = 40,
-) -> tuple[np.ndarray, np.ndarray, float]:
-    """Per-pixel median of warm-up frames that IGNORES agent (person/vehicle) pixels.
-
-    A person standing through warm-up otherwise gets baked into the clean background;
-    when they later leave, the vacated spot differs from clean_bg -> a "ghost" false
-    abandoned alert. Here, pixels where ``animate_of(frame) >= tau16`` (dilated) are
-    excluded per frame so the median sees the floor behind the person instead.
-
-    ``animate_of(frame) -> HxW float`` is the animate score in [0, SEMANTIC_MAX]
-    (e.g. ``OnlineYoloSeg.infer``). Pixels that are animate in EVERY used frame have no
-    clean sample -> fall back to the plain (unmasked) median there.
-
-    Returns ``(clean_bg_gray, clean_bg_color, animate_coverage)`` (float32, float32, float).
-    """
-    if not frames_bgr:
-        raise RuntimeError("build_person_aware_clean_bg: no warmup frames")
-    step = max(1, len(frames_bgr) // max(1, int(max_frames)))
-    sub = frames_bgr[::step]
-    kern = (
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * dilate_px + 1, 2 * dilate_px + 1))
-        if dilate_px > 0
-        else None
-    )
-    ign = []
-    for f in sub:
-        m = (np.asarray(animate_of(f)) >= tau16).astype(np.uint8)
-        if kern is not None:
-            m = cv2.dilate(m, kern)
-        ign.append(m.astype(bool))
-
-    color = np.stack([f.astype(np.float32) for f in sub], axis=0)  # (n,H,W,3)
-    igns = np.stack(ign, axis=0)                                   # (n,H,W) bool
-    color_plain = np.median(color, axis=0)
-    color_nan = np.where(igns[..., None], np.nan, color)
-    with warnings.catch_warnings():  # all-NaN columns (agent in every frame) handled below
-        warnings.simplefilter("ignore", category=RuntimeWarning)
-        color_med = np.nanmedian(color_nan, axis=0)
-    # Pixels where the agent (e.g. a parked car) covered EVERY warm-up frame have no clean
-    # sample. Don't restore the agent (that bakes it in -> ghost when it leaves) — INPAINT the
-    # hole from the surrounding background so clean_bg shows the ground behind it.
-    all_agent = igns.all(axis=0)
-    if all_agent.any():
-        base = np.where(all_agent[..., None], 0, color_med)
-        base = np.clip(np.nan_to_num(base), 0, 255).astype(np.uint8)
-        inpainted = cv2.inpaint(base, all_agent.astype(np.uint8) * 255, 5, cv2.INPAINT_TELEA)
-        color_med[all_agent] = inpainted[all_agent].astype(np.float32)
-    color_med = color_med.astype(np.float32)
-    gray = cv2.cvtColor(np.clip(color_med, 0, 255).astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
-    return gray, color_med, float(igns.mean())

@@ -1,3 +1,7 @@
+"""Reader for PRECOMPUTED dense semantic maps (offline SegFormer/PSPNet, written as 16-bit PNGs by
+demov2/tools/make_dense_semantics_*). Yields per-frame animate/object/stuff score maps for the
+dense-feedback mode without running a heavy model online.
+"""
 from __future__ import annotations
 
 import os

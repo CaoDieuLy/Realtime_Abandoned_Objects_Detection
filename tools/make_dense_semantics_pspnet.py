@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, os.fspath(Path(__file__).resolve().parents[1]))
-from core.semantic_lut import BG_VALUE, FG_VALUE, build_moving_class_set, probability_to_semantic16
+from core.semantic_classes import BG_VALUE, FG_VALUE, build_moving_class_set, probability_to_score
 
 
 def resolve_default_video() -> str:
@@ -127,7 +127,7 @@ def extract_probability_scalar(
             if min_conf > 0:
                 conf = prob.max(axis=0)
                 moving_prob[conf < min_conf] = 0.0
-            return probability_to_semantic16(moving_prob), "seg_logits_probability"
+            return probability_to_score(moving_prob), "seg_logits_probability"
 
     pred = extract_pred(result)
     moving = np.isin(pred, np.asarray(moving_class_ids, dtype=np.int32))

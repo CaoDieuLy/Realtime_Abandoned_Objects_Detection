@@ -1,3 +1,7 @@
+"""RT-SBS semantic decision table: combine the BGS foreground with the semantic map into a CORRECTED
+foreground mask fed back into ViBe (segment -> correct -> update). Implements the background/
+foreground keep-drop rules (tau_bg/tau_fg, optional two-sided tau_bg*/tau_fg*).
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass

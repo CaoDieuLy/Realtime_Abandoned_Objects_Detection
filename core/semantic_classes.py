@@ -1,3 +1,8 @@
+"""Class lookups + score scaling for the semantic sources. Builds the ANIMATE (person/vehicle/animal
+-> reject), OBJECT (bag/umbrella/... -> keep) and STUFF (wall/floor/... -> background) class-id sets
+from a model's label map, and converts probabilities to the 0..SEMANTIC_MAX integer 'score' scale
+used throughout the pipeline.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -178,6 +183,6 @@ def build_stuff_class_set(labels: dict[int, str] | list[str] | tuple[str, ...]) 
     return build_class_set(labels, STUFF_BACKGROUND_TERMS)
 
 
-def probability_to_semantic16(prob: np.ndarray) -> np.ndarray:
+def probability_to_score(prob: np.ndarray) -> np.ndarray:
     prob = np.clip(prob, 0.0, 1.0)
     return np.rint(prob * float(SEMANTIC_MAX)).astype(np.uint16)

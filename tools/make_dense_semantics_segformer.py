@@ -13,7 +13,7 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, os.fspath(Path(__file__).resolve().parents[1]))
-from core.semantic_lut import BG_VALUE, FG_VALUE, build_moving_class_set, probability_to_semantic16
+from core.semantic_classes import BG_VALUE, FG_VALUE, build_moving_class_set, probability_to_score
 
 
 MODEL_IDS = {
@@ -128,11 +128,11 @@ def infer_map(
         moving_prob_np[conf_np < min_conf] = 0.0
         object_prob_np[conf_np < min_conf] = 0.0
         stuff_prob_np[conf_np < min_conf] = 0.0
-    out = probability_to_semantic16(moving_prob_np)
-    object16 = probability_to_semantic16(object_prob_np)
-    stuff16 = probability_to_semantic16(stuff_prob_np)
+    out = probability_to_score(moving_prob_np)
+    object_score = probability_to_score(object_prob_np)
+    stuff_score = probability_to_score(stuff_prob_np)
     pred_np = pred[0].cpu().numpy().astype(np.int32)
-    return out, pred_np, moving_prob_np, object16, stuff16
+    return out, pred_np, moving_prob_np, object_score, stuff_score
 
 
 def write_preview(path: Path, scalar: np.ndarray) -> None:
@@ -195,7 +195,7 @@ def run_variant(args, variant: str) -> None:
                     scalar = scalar[:, :, 0]
                 generated += 1
                 continue
-            scalar, _pred, _moving_prob, _object16, _stuff16 = infer_map(
+            scalar, _pred, _moving_prob, _object_score, _stuff_score = infer_map(
                 torch,
                 F,
                 processor,
