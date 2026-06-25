@@ -67,7 +67,7 @@ Lưu mask debug: thêm `--save-masks-every 300 --outdir <dir>`.
 - `--semantic-mode {none|online-yoloseg|online-segformer|online-pspnet|dense}`.
 - Class roles: `--yolo-animate-classes`, `--yolo-object-classes` (tên COCO; vd `--yolo-animate-classes car,bus,truck` bỏ person giữ car).
 - Lọc/đếm: `--dilate-animate`, `--area-min`, `--ts-static`, `--owner-gate-local`, `--dedup-dist`, `--motion-to-static`, `--stuff-reject`, …
-- `--warmup-ignore {0|1}` (+`--warmup-ignore-dilate`, `--warmup-ignore-max`) — **person-aware warmup**: loại pixel animate (dùng `--yolo-animate-classes`) khỏi median `clean_bg` để người đứng trong warmup không bị "nướng" vào nền (→ ghost FP khi họ rời). **Default 0 (TẮT) — chỉ chạy YOLO trên frame warmup khi bật, nên không ảnh hưởng tốc độ khi tắt.** Mode-agnostic (clean_bg dùng chung). Trên ABODA **không giảm FP** (người ở v11 đi-ngang nên median đã tự loại). Soi kỹ v11: net 11=11 nhưng nó **gỡ đúng 1 FP sàn rồi jitter frame/dedup** — 10/11 vùng lỗi gốc (người+lóa) y nguyên → không trị nguồn thật. Để dành cho cảnh có người đứng-yên-suốt-warmup thật.
+
 - `--proc-width N` (mặc định 640) / `--sem-proc-width N` (mặc định 960) — **TÁCH TRỤC độ phân giải**: BGS/FSM chạy ở `proc-width` (nhẹ, bậc-hai theo pixel → nhanh + area-threshold có nghĩa); YOLO/semantic chạy ở `sem-proc-width` (chi tiết cao, mask resize về proc). Cho camera độ phân giải cao (vd 2560px) → ~10× nhanh mà vẫn detect tốt.
 - `--heal-revealed {0|1}` (+`--heal-lr` 0.15, `--heal-release-s` 5.0) — **adaptive dual-bg** cho camera có xe/người ra-vào. Chạy YOLO TRÊN clean_bg tìm agent (xe/người) bị "nướng" vào nền → cho clean_bg **EMA thích nghi tại pixel đó**:
   - **Heal vô điều kiện** mỗi frame → xe đỗ thì clean_bg=xe (newdiff~0); xe đi thì clean_bg hóa nền-thật trong ~0.5s → **ghost chết trước ngưỡng 5s** (diệt car-ghost).
@@ -76,7 +76,7 @@ Lưu mask debug: thêm `--save-masks-every 300 --outdir <dir>`.
   - Vật thật không nằm trong mask → không đụng. **Default ON** (no-op nơi không có agent baked như ABODA = 0%; trị car-ghost nơi có; release tự-kết-thúc bound blind-spot ~`--heal-release-s`). Đặt `0` nếu muốn tối đa thận trọng an ninh.
   - KQ: vid0355 car-ghost biến mất (2 ev = máy giặt) · vid0103 sạch (1 ev) · video8 HIT/0FP (heal no-op).
   - ⚠️ Giới hạn (perception): YOLO **sót** agent lúc warmup → vẫn ghost; vật-tĩnh **nhận nhầm** là người (không bao giờ "rời") → blind-spot cục bộ tại đó. Cảnh an ninh cao: cân nhắc ảnh nền trống chụp sẵn.
-- `--scene-memory {0|1}` (+`--scene-memory-mode {relocated|background|both}`, `-thresh`, `-source-change`, `-min-move-dist`, `-bg-sim`, `-debug`) — lớp suppress SAU matcher (`core/scene_feature_memory.py`). **`relocated`**: vật-nền bị dời chỗ (match HSV+edge + nguồn đã đổi + ở xa). **`background`**: lóa/bóng để lộ cấu trúc nền cũ. **Default OFF.** ⚠️ Test v11: `relocated` = no-op (0 vật-dời); `background` giảm FP 11→6 NHƯNG **xóa trắng khu đông (suppress 35, gọi nhầm đám đông là "nền")** → **sẽ nuốt vật bỏ quên TRONG đám đông → UNSAFE, đừng bật ở cảnh đông**. Chỉ dùng `relocated` cho camera có vật-nền hay bị xê dịch.
+
 
 ## Gợi ý chọn mode
 
@@ -93,7 +93,7 @@ core/
   controlled_vibe.py    # ViBE Python (numba JIT) — cho phép chèn mask feedback
   semantic_feedback.py  # luật RT-SBS τBG/τFG (một/hai chiều)
   static_state.py       # FSM: clean_bg-diff + framediff/tight + persist + tuổi-tĩnh + cổng semantic + relight
-  semantic_lut.py       # tập lớp moving/object/stuff (LUT → ids)
+  semantic_classes.py   # tập lớp moving/object/stuff (LUT → ids)
   static_matching.py    # gom blob → theo vết → ứng viên
   dense_semantic.py     # đọc dense semantic map (mode dense)
 tools/                  # sinh dense semantic (SegFormer/PSPNet), batch driver

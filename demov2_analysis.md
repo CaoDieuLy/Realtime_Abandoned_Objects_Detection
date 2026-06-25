@@ -170,7 +170,7 @@ abandoned = (static_age ≥ t_static_s)
 
 ---
 
-### 2.7. `core/semantic_lut.py` — Class Lookup (184 dòng)
+### 2.7. `core/semantic_classes.py` — Class Lookup (đổi tên từ `semantic_lut.py`)
 
 **Nhận xét**: Clean, well-structured.
 - `MOVING_OBJECT_TERMS`, `STATIC_OBJECT_TERMS`, `STUFF_BACKGROUND_TERMS`: 3 tập từ vựng phủ rộng.
@@ -270,7 +270,7 @@ Soi 11 ảnh `alert_*.jpg` (1 HIT cái ô f1189 + 11 FP):
 
 **Hệ quả:**
 - **Person-aware warmup** (loại người khỏi median warmup) cho **~0 lợi** trên v11 — đúng vì 0/11 là ghost (người v11 đi-ngang nên median đã tự loại; coverage mask 7.6% nhưng FP 11→11). **So kỹ baseline-OFF vs ON theo VỊ TRÍ**: net 11=11 nhưng KHÔNG cùng tập — nó gỡ **đúng 1 FP sàn (f695)** (chỗ có người warmup cạnh tile → clean_bg đổi) nhưng **khu xếp hàng bắn dư 1 lần** → bù trừ; **10/11 vùng lỗi gốc (người + lóa) y nguyên, chỉ jitter frame/dedup**. → xác nhận không trị nguồn FP thật. Feature đúng & an toàn, **default OFF**, để dành cảnh có người đứng-yên-suốt-warmup thật; KHÔNG bật trong preset.
-- **SCENE_FEATURE_MEMORY — ĐÃ build + test thực nghiệm** (`core/scene_feature_memory.py`, 2 mode `relocated`/`background`, default OFF, unit 4 ca PASS). Kết quả v11 no-feedback: **`relocated` = no-op** (suppress 1 FP sàn trùng hợp, net 12ev/11FP — đúng vì 0 vật-dời). **`background` FP 11→6 NHƯNG suppress 35 candidate = XÓA TRẮNG khu xếp hàng** (gọi nhầm đám đông là "background_glare 1.00" do edge-hist 9-bin quá thô → đám đông ≈ nền). HIT (ô) sống **chỉ vì ô nằm NGOÀI đám đông** (309,270); **vật bỏ quên TRONG đám đông sẽ bị nuốt → UNSAFE**. → scene-memory không giải được "đám đông tan thì im, vật trong đám đông thì báo" (ở mức pixel/blob người-đứng ≡ vật). Chỉ `relocated` hợp lý cho camera có vật-nền-bị-xê-dịch — không phải ABODA.
+- **SCENE_FEATURE_MEMORY — ĐÃ THỬ NGHIỆM VÀ LOẠI BỎ** (file `core/scene_feature_memory.py` đã bị xóa khỏi repo). Lý do: mode `background` giảm FP nhưng nuốt luôn vật bỏ quên trong đám đông → UNSAFE. Mode `relocated` = no-op trên ABODA. Feature không an toàn cho production → đã gỡ hoàn toàn.
 - **Đòn hiệu quả thật cho v11** (theo ảnh + cơ chế): (1) **tăng recall người** (YOLO lớn/imgsz cao/RT-DETR GPU) → loại ~4 người đứng thuần + **co nhỏ** cụm owner-present (vỡ blob, chỉ còn xe đẩy/túi); (2) **owner-leaves reasoning** (track người + gắn người↔vật) → diệt 3 cụm owner-present — đây mới là gốc, person-recall không đủ; (3) **xử lý lóa/bóng** (relight/light-comp/stuff-reject) → gỡ ~3 clutter ánh sáng; (4) **ROI khu chờ** — rẻ, đặc thù camera cố định. ⚠️ Không "suppress theo vùng" (scene-memory background): box-cụm là khối GỘP, suppress cả box sẽ nuốt vật thật nằm trong.
 
 ### gather-px: đổi default 15 → 5 (2026-06)
