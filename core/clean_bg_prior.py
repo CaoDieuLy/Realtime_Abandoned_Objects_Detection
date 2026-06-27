@@ -8,9 +8,39 @@ adaptive BGS model would absorb a static object.
 from __future__ import annotations
 
 import os
+import warnings
 
 import cv2
 import numpy as np
+
+
+def build_motion_aware_clean_bg(frames_bgr, motion_thresh: float = 20.0, max_frames: int = 80):
+    """Color median over warm-up frames that EXCLUDES per-pixel MOTION.
+
+    A plain median bakes in whatever covered a pixel >50% of the warm-up — including a person/door
+    that was active there. Here a pixel whose frame-to-frame change exceeds ``motion_thresh`` was
+    occluded by a transient in that frame and is dropped (NaN); the median then sees only the STILL
+    background. Falls back to the plain median where a pixel was never still.
+
+    Returns ``(clean_gray, clean_color, motion_coverage)`` (float32, float32, float)."""
+    if not frames_bgr:
+        raise RuntimeError("build_motion_aware_clean_bg: no warmup frames")
+    step = max(1, len(frames_bgr) // max_frames)
+    sub = frames_bgr[::step]
+    color = np.stack([f.astype(np.float32) for f in sub], axis=0)                    # (n,H,W,3)
+    gray = np.stack([cv2.cvtColor(f, cv2.COLOR_BGR2GRAY).astype(np.float32) for f in sub], axis=0)
+    fdiff = np.abs(np.diff(gray, axis=0))                                            # (n-1,H,W)
+    motion = np.concatenate([fdiff[:1], fdiff], axis=0) > motion_thresh              # (n,H,W) moved here
+    color_nan = np.where(motion[..., None], np.nan, color)
+    with warnings.catch_warnings():                                                  # all-NaN cols handled below
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        clean_color = np.nanmedian(color_nan, axis=0)
+    all_motion = motion.all(axis=0)                                                  # never still -> plain median
+    if all_motion.any():
+        clean_color[all_motion] = np.median(color, axis=0)[all_motion]
+    clean_color = np.nan_to_num(clean_color).astype(np.float32)
+    clean_gray = cv2.cvtColor(np.clip(clean_color, 0, 255).astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
+    return clean_gray, clean_color, float(motion.mean())
 
 
 def resize_to_width(frame: np.ndarray, proc_width: int) -> np.ndarray:

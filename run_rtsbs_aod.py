@@ -25,7 +25,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from core.clean_bg_prior import build_camera_warmup_background, build_warmup_background, open_camera_capture, resize_to_width
+from core.clean_bg_prior import (build_camera_warmup_background, build_motion_aware_clean_bg,
+                                 build_warmup_background, open_camera_capture, resize_to_width)
 from core.controlled_vibe import ControlledViBE, ViBEConfig
 from core.dense_semantic import DenseSemanticSequence
 from core.semantic_feedback import SemanticFeedback, SemanticFeedbackConfig
@@ -47,6 +48,31 @@ def draw_alert(frame: np.ndarray, bbox: list[int], text: str) -> np.ndarray:
     cv2.rectangle(out, (x1, y1), (x2, y2), (0, 0, 255), 2)
     cv2.putText(out, text, (x1, max(15, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
     return out
+
+
+def is_lighting_artifact(gray: np.ndarray, clean_bg_gray: np.ndarray, bbox, ncc_thresh: float, min_texture: float) -> bool:
+    """True if the candidate's patch is the SAME structure as clean_bg, only brightness-shifted —
+    i.e. a LOCAL lighting change (a corner light turning on), not a deposited object.
+
+    Uses normalized cross-correlation (NCC), which is invariant to a brightness/contrast shift: a
+    region that just got brighter keeps NCC~1 vs clean_bg, while a real object (new structure) drops
+    NCC. Only judged on a TEXTURED background (clean_bg patch std >= min_texture); a flat patch is
+    ambiguous (flat-vs-flat correlates) so we return False = do NOT suppress (alert anyway — the
+    security-safe choice)."""
+    x1, y1, x2, y2 = bbox
+    h, w = gray.shape[:2]
+    x1, y1, x2, y2 = max(0, x1), max(0, y1), min(w, x2), min(h, y2)
+    if x2 - x1 < 5 or y2 - y1 < 5:
+        return False
+    cur = gray[y1:y2, x1:x2].astype(np.float32)
+    bg = clean_bg_gray[y1:y2, x1:x2].astype(np.float32)
+    if float(bg.std()) < min_texture:          # flat background -> NCC unreliable -> don't suppress
+        return False
+    cm = cur - cur.mean(); bm = bg - bg.mean()
+    denom = float(np.sqrt(float((cm * cm).sum()) * float((bm * bm).sum())))
+    if denom < 1e-6:
+        return False
+    return float((cm * bm).sum() / denom) >= ncc_thresh
 
 
 def semantic_decision_preview(bg_rule: np.ndarray, fg_rule: np.ndarray) -> np.ndarray:
@@ -334,6 +360,10 @@ def parse_args():
                          "Higher = better person/object detection (its mask is resized back to --proc-width). "
                          "YOLO cost ~ depends on --yolo-imgsz, not on this, so high detail is ~free.")
     common.add_argument("--warmup-s", type=float, default=22.0)
+    advanced.add_argument("--warmup-motion-mask", type=int, default=0,
+                          help="1=build clean_bg by a MOTION-aware median (exclude per-pixel transients during "
+                               "warm-up) so a person/door that was active during the warm-up isn't baked into the "
+                               "background (= ghost FP later). Use when the warm-up window isn't perfectly empty.")
     common.add_argument("--max-frames", type=int, default=0)
 
     advanced.add_argument("--vibe-samples", type=int, default=30)
@@ -425,6 +455,20 @@ def parse_args():
     advanced.add_argument("--persist-s", type=float, default=2.0,
                     help="persistent-diff >= this many s -> protect clean_bg from absorbing it (don't eat static object)")
     advanced.add_argument("--light-comp", type=int, default=1, help="1=re-baseline clean_bg on high-coverage lighting events")
+    advanced.add_argument("--light-struct", type=int, default=1,
+                          help="1=at alert time, drop a candidate whose patch is the SAME structure as clean_bg "
+                               "only brightness-shifted (a LOCAL lighting change, e.g. a corner light turning on) "
+                               "via brightness-invariant NCC. Only on textured background (flat patches are left "
+                               "alone -> still alert, security-safe).")
+    advanced.add_argument("--light-struct-ncc", type=float, default=0.85,
+                          help="NCC(frame patch, clean_bg patch) >= this -> same structure -> lighting -> suppress")
+    advanced.add_argument("--light-struct-texture", type=float, default=8.0,
+                          help="only apply --light-struct where clean_bg patch std >= this (textured bg)")
+    advanced.add_argument("--alert-min-support", type=float, default=0.05,
+                          help="evidence-gate: at alert, require the candidate bbox to still have this FRACTION "
+                               "of current newdiff pixels. A frozen-bg object always differs (support stays high); "
+                               "a stale ghost whose diff was absorbed (e.g. lighting eaten by light-comp) drops to "
+                               "~0 -> deferred, not alerted. Safe: brief occlusion only DELAYS (re-ages). 0=off.")
     advanced.add_argument("--heal-cov", type=float, default=0.15)
     advanced.add_argument("--heal-alpha", type=float, default=1.0)
     advanced.add_argument("--heal-alpha-dark", type=float, default=0.05)
@@ -456,6 +500,11 @@ def parse_args():
                          "long enough that clean_bg fully heals first so no residual ghost. fps-independent.")
     advanced.add_argument("--dedup-dist", type=float, default=40.0, help="two alerts closer than this (px) = same location")
     advanced.add_argument("--dedup-clear-s", type=float, default=3.0, help="object must leave a spot (newdiff empty) this long before a new alert there")
+    advanced.add_argument("--dedup-cooldown-s", type=float, default=30.0,
+                          help="after alerting at a location, block any new alert within --dedup-dist of it for "
+                               "at least this long, REGARDLESS of candidate-id churn or newdiff flicker. Stops the "
+                               "SAME object re-alerting when its candidate is torn down + rebuilt (e.g. its owner "
+                               "walks off through the spot, or BGS noise breaks the blob).")
     advanced.add_argument("--debug-owner", type=int, default=0,
                     help="1=print an [OWNER-DBG] line at each alert: density / owner-gate active / person-overlap / "
                          "distance to nearest detected person / frames since a person was last near. Explains why "
@@ -687,6 +736,9 @@ def main() -> int:
         initial_semantic=initial_semantic,
     )
     clean_bg_color = np.median(np.stack(warmup_frames, axis=0), axis=0).astype(np.float32) if warmup_frames else None
+    if args.warmup_motion_mask and warmup_frames and len(warmup_frames) > 2:
+        clean_bg, clean_bg_color, mcov = build_motion_aware_clean_bg(warmup_frames)
+        print(f"[warmup] motion-aware clean_bg ON: {mcov * 100:.1f}% of warm-up pixel-samples excluded as motion")
 
     # heal-revealed (adaptive dual-bg): agents (car/person) BAKED into clean_bg ghost when they
     # later leave. Detect them by running the semantic engine ON clean_bg (a parked car is stable
@@ -783,7 +835,7 @@ def main() -> int:
     )
     crowd = CrowdEstimator(n_crowd=args.crowd_n)
     density = "low"
-    alerted_locs: list[list[int]] = []          # [cx, cy, last_seen_frame] for location dedup
+    alerted_locs: list[list[int]] = []          # [cx, cy, last_seen_frame, alert_frame] for location dedup
     person_near_frame: dict[int, int] = {}       # cand_id -> last frame a person was within reach
     person_seen = np.full((h, w), -(10 ** 9), dtype=np.int64)  # per-pixel last frame a person was detected
     person_seen_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21))     # generous stamp (seg masks are tight)
@@ -959,9 +1011,15 @@ def main() -> int:
             if newdiff[max(0, ly - 5):ly + 5, max(0, lx - 5):lx + 5].max() > 0:
                 L[2] = i
         if alerted_locs:
-            alerted_locs = [L for L in alerted_locs if (i - L[2]) < args.dedup_clear_s * fps]
+            # keep an entry while the spot is still occupied (newdiff seen within dedup_clear_s) OR
+            # while still inside the post-alert cooldown (so a torn-down+rebuilt candidate at the same
+            # spot can't re-alert even if newdiff briefly went empty / cand_id churned).
+            alerted_locs = [L for L in alerted_locs
+                            if (i - L[2]) < args.dedup_clear_s * fps
+                            or (i - L[3]) < args.dedup_cooldown_s * fps]
 
         cands = matcher.update(aod_fg, t_now, i)
+        frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if (cands and args.light_struct) else None
         for cand in cands:
             center = cand.center()
             moved = cand.cand_id in last_center and np.hypot(
@@ -1015,6 +1073,21 @@ def main() -> int:
                     b = [x, y, x + ww, y + hh]
                 rcx, rcy = (b[0] + b[2]) // 2, (b[1] + b[3]) // 2
 
+                # evidence-gate: a real abandoned object differs from the FROZEN clean_bg every frame, so
+                # newdiff keeps firing on it. A candidate whose CURRENT newdiff support has vanished is a
+                # stale ghost -- e.g. a transient lighting region that light-comp already absorbed into
+                # clean_bg, kept alive only by static-FG hysteresis -> DEFER (no alerted.add: if real
+                # evidence returns it can still alert later). Safe: brief occlusion only delays, not drops.
+                if args.alert_min_support > 0:
+                    nd_sub = newdiff[max(0, b[1]):b[3], max(0, b[0]):b[2]]
+                    bb_area = max(1, (b[3] - b[1]) * (b[2] - b[0]))
+                    support = float((nd_sub > 0).sum()) / bb_area
+                    if support < args.alert_min_support:
+                        if args.debug_owner:
+                            print(f"[SUPPORT-DBG] f{i} c({rcx},{rcy}) support={support:.2%} "
+                                  f"< {args.alert_min_support:.2%} -> defer", flush=True)
+                        continue
+
                 # location dedup: same spot still occupied -> same object (cand_id churned) -> skip
                 if any(np.hypot(rcx - L[0], rcy - L[1]) < args.dedup_dist for L in alerted_locs):
                     alerted.add(cand.cand_id)
@@ -1032,6 +1105,12 @@ def main() -> int:
                     if (i - last_near) < args.owner_clear_s * fps and waited < args.owner_timeout_s:
                         continue
 
+                # local-lighting suppress: a textured patch that only got brighter/darker (same
+                # structure as clean_bg) is a lighting change, not an object -> skip.
+                if args.light_struct and frame_gray is not None and is_lighting_artifact(
+                        frame_gray, sfg.clean_bg, b, args.light_struct_ncc, args.light_struct_texture):
+                    alerted.add(cand.cand_id)
+                    continue
 
                 if args.debug_owner:
                     rch = int(max(args.owner_margin, args.owner_k * ((b[2] - b[0]) * (b[3] - b[1])) ** 0.5))
@@ -1052,7 +1131,7 @@ def main() -> int:
                     "cand_id": cand.cand_id,
                 }
                 events.append(ev)
-                alerted_locs.append([rcx, rcy, i])
+                alerted_locs.append([rcx, rcy, i, i])   # cx, cy, last_seen, alert_frame
                 alert = draw_alert(frame, b, f"obj#{cand.cand_id} {present:.1f}s")
                 cv2.imwrite(
                     os.path.join(args.outdir, f"alert_f{i}_c{rcx}_{rcy}.jpg"),
@@ -1109,7 +1188,8 @@ def main() -> int:
 
     cap.release()
     elapsed = time.time() - t0
-    print(f"\n[demo2] done: {i} frames, {len(events)} events, {i / max(0.001, elapsed):.1f} FPS")
+    print(f"\n[demo2] done: {i} frames, {len(events)} events, {i / max(0.001, elapsed):.1f} FPS"
+          f" | light-comp fired {getattr(sfg, 'lightcomp_count', 0)} frames")
 
     with open(os.path.join(args.outdir, "events.json"), "w", encoding="utf-8") as f:
         json.dump(events, f, indent=2, ensure_ascii=False)

@@ -121,6 +121,8 @@ class StaticForegroundState:
         self._relearn_buf_gray: list[np.ndarray] = []
         self._relearn_buf_color: list[np.ndarray] = []
         self.relearning = False                  # public flag: detection paused this frame
+        self._n = 0                              # update() call counter (≈ frame index)
+        self.lightcomp_count = 0                 # how many frames fired light-comp (lighting absorb)
         # last outputs, kept for inspection / debugging
         self.fgbg = np.zeros((h, w), dtype=bool)        # "different from clean_bg" mask (a.k.a. newdiff>0)
         self.moving = np.zeros((h, w), dtype=bool)
@@ -220,6 +222,7 @@ class StaticForegroundState:
         protect_mask: np.ndarray | None = None,    # pixels never absorbed into clean_bg (already alerted)
     ) -> dict[str, np.ndarray]:
         cfg = self.cfg
+        self._n += 1
         gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
 
         # re-light: pause detection while rebuilding clean_bg for a new lighting mode
@@ -243,7 +246,12 @@ class StaticForegroundState:
 
         # light-comp: a global lighting event changes many regions at once (high coverage); absorb
         # them into clean_bg (re-baseline), but never the persistent/protected object.
-        if cfg.light_comp and float(newdiff.mean()) > cfg.heal_cov:
+        coverage = float(newdiff.mean())
+        if cfg.light_comp and coverage > cfg.heal_cov:
+            self.lightcomp_count += 1
+            if self.lightcomp_count == 1:
+                print(f"[LIGHT-COMP] first fired @frame~{self._n} (coverage {coverage*100:.0f}% > "
+                      f"{cfg.heal_cov*100:.0f}%)", flush=True)
             absorb = (newdiff > 0) & (~protect_persist)
             if protect_mask is not None:
                 absorb &= ~protect_mask

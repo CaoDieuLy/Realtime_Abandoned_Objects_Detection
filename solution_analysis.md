@@ -338,6 +338,43 @@ Bù penalty nano→s (~2× chậm) bằng backend nhanh hơn. Drop-in qua ultral
 - Export: `yolo export model=yolo26s-seg.pt format={onnx|openvino} imgsz=960` → `--yolo-weights yolo26s-seg_openvino_model` (hoặc `.onnx`). Cần pip `openvino`/`onnxruntime`.
 - Đòn lớn hơn (chưa đo, có thể kết hợp): `--yolo-imgsz 960→736/640` (~bình phương) nhưng phải **test lại recall người**.
 
+## 3.11. Kết quả full-sweep — BẢN RELEASE (cấu hình mặc định)
+
+Chạy toàn bộ 13 video **chỉ bằng default** (no-feedback · OpenVINO `yolo26s-seg` · heal-revealed ON · relight-tuned · `crowd-n=10`), chỉ khác warmup (vid0103=8s, vid0355=3s, còn lại 20s). Chấm HIT = box cách GT-box ≤25px.
+
+| video | events | HIT | FP | ghi chú |
+|---|---|---|---|---|
+| video1 | 1 | 1/1 | 0 | sạch |
+| video2 | 1 | (1/1) | (0) | bắt đúng vật nhưng tâm lệch 26px → box-gap chấm strict thành "miss/FP"; thực tế HIT |
+| video3 | 1 | 1/1 | 0 | sạch |
+| video4 | 1 | 1/1 | 0 | sạch |
+| video5 | 1 | 1/1 | 0 | sạch (dev cũ 2ev/1FP → nay sạch) |
+| video6 | 8 | 2/2 | 5 | FP hỗn hợp: **góc cầu thang đổi-sáng** (light-struct diệt được) + **warmup-baked người** (f780: người đứng suốt 20s warmup→nướng vào nền; heal-revealed sót vì người mờ trong median) + đèn-tắt/brightening-sát-ngưỡng |
+| video7 | 4 | 1/1 | 2 | 2 FP lighting-residual + 1 leg-FP (person-recall) |
+| video8 | 3 | 1/1 | 1 | 1 FP lẻ |
+| video9 | 2 | 1/1 | 0 | **báo lặp 2 lần cùng vật** (dedup bị candidate-churn đánh bại — xem §3.12) |
+| video10 | 2 | 1/1 | 1 | 1 FP lẻ |
+| video11 | 12 | 1/1 | 10 | **FP đám đông** (>40 người; perception) |
+| vid0103 | 2 | (noGT) | — | car thật, sạch |
+| vid0355 | 2 | (noGT) | — | máy giặt HIT, car-ghost đã trị |
+
+**TỔNG video1–11: Recall 12/12 (video2 bắt được, chỉ lệch tâm) · FP = 20.**
+- So **baseline phát triển** (nano, crowd-6, trước fix) FP ≈ 42 → **release FP = 20 (giảm ~½)**: nhờ **relight-tuning** (v7 21→2, v6 7→5), **yolo26s** (recall người), **presence-memory** (owner-gate), **crowd-n 10**.
+- FP còn lại dồn **video11 (10, đám đông) + video6 (5) + video7 (2) = 17/20** — đúng 2 nhóm cần xử tiếp (P1: dedup/đổi-sáng-cục-bộ; P2: perception đám đông).
+- *(FPS bảng này 4–6 do máy throttle/contention lúc chạy qua đêm; benchmark sạch ~7–9 FPS — xem §3.10.)*
+
+## 3.12. FP còn lại sau release: dedup / warmup-ghost / lighting / scene-state-change
+
+Đào sâu FP còn lại (xem `checklist.md` cho phương án chi tiết):
+- **P1a dedup-cooldown (`--dedup-cooldown-s` 30s, ĐÃ LÀM)**: video9 báo-lặp 1 vật 2 lần (cand bị xé-dựng-lại khi chủ rời → dedup-cũ bị qua mặt). Cooldown vị-trí-thời-gian, độc lập cand_id → 2→1.
+- **P1b light-struct (NCC tại alert, ĐÃ LÀM)**: bỏ FP **đổi-sáng-THUẦN trên nền vân** (góc cầu thang video6 NCC 0.96). An toàn (texture-gate; vật cấu-trúc-khác → giữ).
+- **B warmup-motion-mask (`--warmup-motion-mask`, OPT-IN)**: trị **warmup-baked transient ĐỘNG** (video6 f780: người/cửa cử-động lúc warmup → nướng → ghost). KQ: video6 f780 hết (HIT 2/2), nhưng **vid0355 +1 FP** (đổi median vùng xe) → opt-in. Rủi ro = thêm-FP (không nuốt vật).
+- **⭐ C evidence-gate (`--alert-min-support` 0.05, ĐÃ LÀM, default ON)**: FP sàn/cột video6 (f5157/f5171×2) hóa ra là **candidate "MA"** — light-comp đã HẤP THỤ đổi-sáng vào clean_bg (newdiff=0 lúc alert) nhưng static-FG còn giữ trễ → vẫn báo. C đòi bbox còn **≥5% newdiff hiện tại**; ~0 → DEFER. Vật-frozen luôn có support (đo 25–58%), ma=0%. **Sweep 11 video: Recall 12/12 (0 miss), FP ~20→16** (video6 8→4, video9 2→0, video10 2→0). An toàn: che thoáng qua chỉ trễ (re-age tức thì).
+- **❌ A regional-shift (ĐÃ THỬ → GỠ)**: định so patch-vs-ring để bỏ đổi-sáng-đều, NHƯNG các FP này lúc alert có **blob_n=0** (đã bị light-comp hấp thụ) → A không có gì để đo → test video6 bỏ **0 FP** → gỡ. Bài học: chúng là **ma cũ** (C trị) chứ không phải lighting-sống (A trị). A còn rủi ro nuốt-vật.
+- **video7 f2035/f2052 = lighting-SỐNG** (còn support lúc alert) → C không đụng (đúng); để relight-tuning/chấp nhận. KHÁC video6 (ma đã-hấp-thụ).
+- **❌ scene-state-change RUNTIME (MỞ CỬA, ghế xê dịch...)**: **giới hạn CỐ HỮU** — static + khác clean_bg + không-người → báo nhầm; pipeline không phân biệt "cảnh đổi" vs "vật để lại". Không lớp nào cứu. → cần stuff-reject(dense)/ROI-mask/chấp nhận.
+- **f5148 (đèn-tắt-cục-bộ)** thuộc họ scene-state-change (blob có support thật, std-diff 55) → C/A đều không trị.
+
 ## 4. Các vấn đề chính (tổng hợp)
 
 ### 🔴 Nghiêm trọng

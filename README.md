@@ -66,10 +66,46 @@ Vì dựa trên "khác nền sạch + đứng yên + không-phải-người/xe":
 - ✅ Đổi sáng **ngày↔đêm, bật/tắt đèn, sáng tăng dần**: `relight` tự dựng lại nền ở mức sáng **đã ổn định** → không báo giả lúc chuyển sáng. Bóng đổ ngoài trời + hồng ngoại/đêm OK.
 - ⚠️ Đổi sáng **cực không đều theo vùng** (bật đèn từng góc) còn vài FP cục bộ nhỏ.
 
-**Mật độ người**
-- ✅ Đã test tới **đám đông >40 người** (video11: vừa có **khu tụ tập** vừa **rải rác**) — **vẫn bắt được vật trong khu đông MIỄN LÀ vị trí vật ít người qua lại + không bị che lấp**.
-- **owner-gate** (hoãn báo khi **chủ còn đứng cạnh** vật) **tự bật khi cảnh THƯA** (trung bình **< `--crowd-n` = 10** blob người/xe); đám đông **dày hơn** → tắt owner-gate (vì kiểm-tra-chủ-từng-vật không còn tin cậy giữa đám đông).
-- FP tăng theo mật độ người (giới hạn nhận-diện): cảnh **thưa–vừa sạch nhất**; đám đông dày FP cao hơn nhưng **vật thật vẫn được bắt**.
+**Mức chiếm dụng foreground theo instance mask**
+
+Đây là thước đo dùng để mô tả cảnh theo **diện tích pixel bị đối tượng chiếm**, đồng thời vẫn giữ số lượng đối tượng. Không suy ra mật độ từ số người đơn thuần.
+
+```text
+animate-FG = union(mask người / xe / động vật được detector nhận ra)
+object-FG  = union(mask balo / ô / túi / vali / chai được detector nhận ra)
+semantic-FG = animate-FG union object-FG
+coverage = area(mask) / area(frame)
+```
+
+Đã chạy tuần tự cả 13 video một lần bằng `yolo26n-seg.pt`, `imgsz=640`, `conf=0,15`; semantic được lấy mẫu **1 frame/giây**, batch 16. Vì CPU chỉ đạt ~2,3 semantic inference/giây, các số **TB/min/max là trên sample 1 Hz**, không phải cực trị tuyệt đối của mọi frame gốc. Tập lệnh và report thô có thể tái lập ở [`measure_instance_occupancy.py`](tools/measure_instance_occupancy.py) và [`aboda_instance_occupancy_1fps.json`](metrics/aboda_instance_occupancy_1fps.json).
+
+- `Semantic-FG TB/min/max`: union pixel mask của animate + static-object.
+- `Animate n TB/max`: số instance animate detector nhìn thấy; đây là **detected count**, không phải số người thật trong cảnh.
+- `GT target mask`: diện tích mask vật bỏ quên từ annotation ABODA, chính xác theo nhãn; không phụ thuộc YOLO.
+- `FG khi GT xuất hiện`: semantic-FG trong các sample từ `start_frame` đến `end_frame` của vật GT. `vid0103`/`vid0355` không có annotation event trong `aboda_gt.json`.
+
+| Video | Semantic-FG<br>TB / min / max | Animate n<br>TB / max | Animate mask<br>TB / max | Static-object mask<br>TB / max | GT target mask | FG khi GT xuất hiện<br>TB / min / max |
+|---|---:|---:|---:|---:|---:|---:|
+| video1 | 2,72 / 0,00 / 8,26% | 1,1 / 3 | 2,45 / 7,83% | 0,27 / 0,74% | 0,57% | 3,05 / 0,62 / 8,26% |
+| video2 | 1,73 / 0,00 / 10,12% | 2,6 / 11 | 1,73 / 10,12% | 0,01 / 0,36% | 0,11% | 0,92 / 0,31 / 2,48% |
+| video3 | 0,91 / 0,30 / 3,01% | 1,4 / 3 | 0,77 / 2,74% | 0,15 / 2,57% | 0,25% | 1,44 / 0,33 / 2,88% |
+| video4 | 1,85 / 0,00 / 13,23% | 1,6 / 3 | 1,78 / 13,23% | 0,06 / 0,75% | 0,46% | 2,34 / 0,00 / 13,23% |
+| video5 | 1,07 / 0,00 / 9,03% | 0,7 / 4 | 1,07 / 9,03% | 0,00 / 0,00% | 0,22% | 0,78 / 0,00 / 3,87% |
+| video6 | 0,63 / 0,00 / 19,43% | 0,2 / 5 | 0,62 / 19,43% | 0,01 / 1,19% | 0,24% + 0,33% | 2,12 / 0,00 / 19,43% |
+| video7 | 0,42 / 0,00 / 9,00% | 0,1 / 2 | 0,36 / 9,00% | 0,06 / 1,49% | 0,73% | 0,43 / 0,00 / 2,54% |
+| video8 | 0,63 / 0,00 / 8,43% | 0,1 / 2 | 0,42 / 8,43% | 0,21 / 2,63% | 2,27% | 1,10 / 0,00 / 6,76% |
+| video9 | 1,41 / 0,00 / 10,26% | 0,3 / 2 | 1,31 / 9,51% | 0,10 / 2,41% | 1,03% | 0,38 / 0,00 / 4,40% |
+| video10 | 1,62 / 0,00 / 10,79% | 0,3 / 2 | 1,07 / 10,79% | 0,56 / 1,66% | 1,03% | 1,74 / 1,11 / 5,13% |
+| video11 | 3,32 / 1,19 / 5,44% | 10,5 / 15 | 3,31 / 5,36% | 0,02 / 0,33% | 0,08% | 3,39 / 1,19 / 5,44% |
+| vid0103 | 6,05 / 0,00 / 10,39% | 1,7 / 4 | 5,69 / 9,74% | 1,09 / 9,31% | — | — |
+| vid0355 | 6,34 / 0,00 / 11,33% | 2,4 / 5 | 6,33 / 11,33% | 0,03 / 0,50% | — | — |
+
+Ví dụ đọc đúng số liệu:
+
+- **video11**: detector thấy trung bình **10,5**, tối đa **15** animate instance; mask animate chiếm TB **3,31%**, cao nhất **5,36%** khung hình. Cảnh thực tế có thể có khoảng 40 người/vật như quan sát bằng mắt, nhưng **không được ghi thành 40 trong metric**: model bỏ sót/ghép các người xa hoặc che nhau. Đây là giới hạn perception cần báo cáo, không phải bằng chứng cảnh thưa.
+- **vid0355**: animate mask chiếm TB **6,33%**, tối đa **11,33%**. Trong đó model gán `car` TB **5,47%** (max **9,96%**) và `person` TB **0,87%** (max **2,67%**); xe đôi lúc bị đổi nhãn `truck`, nên không cộng hai cột này. COCO YOLO không có lớp **washing machine**, nên static-object mask **không phải** diện tích máy giặt; cần annotation riêng hoặc model open-vocabulary/fine-tune để đo vật đó.
+
+`owner-gate` vẫn dùng semantic person/vehicle để kiểm tra **chủ đứng gần vật**; đây là tín hiệu cục bộ cho quyết định alert. Với product, nên log đồng thời `semantic-FG coverage` và detected count; khi cần audit/đánh giá chính xác, thêm GT mask hoặc model nhận diện được đúng class vật mục tiêu.
 
 ## Tốc độ
 Đo trên **CPU** (chưa dùng GPU), YOLO-seg `yolo26s` OpenVINO, semantic mỗi 10 frame:
@@ -137,6 +173,6 @@ solution_analysis.md    # phân tích chi tiết + quá trình phát triển + k
 ## Kết quả & giới hạn (tóm tắt)
 Chi tiết đầy đủ + quá trình phát triển: **[`solution_analysis.md`](solution_analysis.md)**.
 
-- **ABODA full-sweep (13 video, 1 cấu hình)**: **recall 12/12** (bắt được mọi vật). FP tập trung ở vài cảnh khó (đổi-sáng-từ-từ, đám đông); 6 cảnh sạch 0 FP.
+- **ABODA full-sweep (13 video, 1 cấu hình)**: **recall 12/12** (bắt được mọi vật). FP tập trung ở vài cảnh khó (đổi-sáng-từ-từ, chuyển động/che lấp cục bộ); 6 cảnh sạch 0 FP.
 - **Đã trị**: car-ghost (xe đỗ-rồi-đi, `--heal-revealed`); khe-hở đổi-sáng-từ-từ (tune relight); owner-gate báo-khi-chủ-đứng (model recall mạnh hơn + person-presence memory).
 - **Giới hạn cố hữu (perception)**: model **không phân biệt được vật nhỏ-mảnh đứng (vd ô gập) với người** → mọi heuristic chỉ là đánh đổi recall↔precision. Lối ra thật sự = model **nhận ra vật** + bắt sự kiện **"chủ rời đi"** (open-vocab / fine-tune detector).
