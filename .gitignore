@@ -27,3 +27,9 @@ env/
 results_full/
 diff*.txt
 results_relight/
+
+# scratch / dev test outputs (not for release)
+test_*/
+diag/
+debug/
+results_bcfix_*/_t.log

@@ -45,8 +45,11 @@
   - video6: **f780 BIẾN MẤT** (8→6 ev), HIT 2/2 ✓
   - video7: 4→4, HIT 1/1 (no change) ✓
   - video11: 12→12, HIT 1/1 (no change) ✓
-  - **vid0355: 2→3 ev — B THÊM 1 FP** (f389 (403,252) = đất vùng car-ghost; B đổi median vùng xe → ghost đất tái xuất) ⚠️
-- **VERDICT: opt-in (default OFF)** — B có lợi (video6) nhưng **KHÔNG free**: thêm FP ở vid0355 → không bật toàn cục. Dùng cho cảnh có warmup-ghost (người/cửa-động lúc học nền).
+  - **vid0355: 2→3 ev — B THÊM 1 FP** (f389 (403,252)) — **đã ĐO cơ chế + ĐÃ FIX**: tái lập 100% (plain 2/2 sạch, B 2/2 FP, không phải noise). Cơ chế gián tiếp: B cắt pixel-motion-xe khỏi clean_bg → heal-revealed YOLO (chạy TRÊN clean_bg) nhận vùng xe nhỏ hơn (12.1%→10.7%) → vùng suppress co → (403,252) rìa xe lọt ra → FP.
+  - **✅ FIX (heal-detect trên plain median)**: tách 2 vai trò clean_bg — heal-revealed detect trên `clean_bg_color_for_heal` (plain, lưu trước khi B ghi đè); newdiff/state dùng clean_bg-B. **KQ B+C(fix): vid0355 2ev (FP HẾT), video6 f780 vẫn hết (3ev HIT2/2), heal về 12.1%.** Behavior-preserving khi B tắt.
+  - ⚠️ **NHƯNG B+C(fix) đẻ FP MỚI video11 (194,222)**: full-sweep cho thấy video11 12→13. Truy: (194,222) có ở MỌI config bật B (không C-only) → **B gây qua newdiff→relight-divergence**, deterministic (repeat 2/2). Trước fix bị CHE bởi heal-on-B tình cờ nén 1 FP khác (342,366); fix gỡ che → lộ.
+  - ❌ **Đã THỬ "targeted-B" (chỉ áp B nơi region|B−plain|>ngưỡng) → LOẠI**: (a) ngưỡng vô căn cứ (overfit, chọn 6 nằm giữa f780=31.6 và vid11=5.3); (b) **đo principled (noise-floor) cho thấy (194,222)=5.3 là B-correction THẬT, không phải noise**; (c) **test: targeted-B KHÔNG khử được (194,222)** (vẫn 13ev) vì FP seed từ correction KHÁC (>ngưỡng, bị giữ). → **lợi ích B (f780) và hại B (relight-FP) KHÔNG tách rời** — cùng từ correction của B. Đã revert về B+C(fix).
+  - **VERDICT B (cập nhật): DEFAULT ON** (`--warmup-motion-mask` 1) theo quyết định người dùng — fix f780 out-of-the-box, đổi lấy video11 +1 FP (đã hiểu, chấp nhận). Tắt bằng `--warmup-motion-mask 0`. Cho cam thật: **ưu tiên `--clean-bg-image`/cửa-sổ-warmup-sạch** (né nhiễm tại gốc, ổn định hơn B); B perturbs clean_bg → có thể đẻ FP khó lường ở cảnh khác → **nên A/B test trên footage thật**.
 - **Rủi ro của B = thêm FP (false-POSITIVE)**, KHÔNG nuốt vật (B chỉ đổi nền tham chiếu, không suppress alert) → **an toàn hơn A** cho an ninh.
 - **Giới hạn**: chỉ trị transient-ĐỘNG; trạng-thái-SAI-tĩnh (cửa giữ mở yên >50% warmup) → không cứu.
 - **Đã thử + LOẠI**: mở rộng heal-revealed quét warmup-frames bằng YOLO → vô ích (YOLO MÙ với người-tối-cúi ở cửa video6: 0% baked) → đã revert.
@@ -66,6 +69,15 @@
 ---
 
 ## 2. ⏳ CHƯA LÀM — ACTIONABLE
+
+### P2-bbox — bbox cảnh báo ÔM VẬT (gather-0 cho box tí xíu) ⭐ ưu tiên
+- **Triệu chứng**: với `--gather-px 0` box chỉ 1 góc tí của vật (video8: 23×11 vs GT 208×67). Ngay cả gather-5 chỉ ~52% vật (mask khác-nền không phủ chỗ vật trùng-sáng-nền).
+- **Phương án (tăng dần)**: (a) gather-px ≥5 + fill-holes; (b) bbox-refine = **union(tight,newdiff) + CLOSE 10px + fill-holes**; (c) **ưu tiên mask YOLO-seg** của instance phủ candidate (khít nhất, nhưng chỉ vật COCO → fallback diff-box).
+- **Test**: video8 (máy giặt, non-COCO) + video1/4 (vật rõ) — box phải ôm ≥80% vật, không over-grow dính bóng.
+
+### P2-dedup-vật-to — vid0355: 1 máy giặt báo LẶP 2 vị trí
+- **Triệu chứng**: máy giặt to → 2 alert (459,253)+(512,204) cách ~75px > `--dedup-dist` 40 → dedup không gộp → báo lặp.
+- **Phương án**: dedup-dist **co giãn theo kích thước vật** (vd max(40, 0.5·√area)) hoặc gộp alert cùng-frame gần nhau. **Test**: vid0355 (1 alert) + ABODA (không gộp nhầm 2 vật riêng).
 
 ### P2a — Điều tra FP vid0103 (302,212)
 - **Hiện trạng**: tất định 4/4 lần, **không phải crowd-n, không phải noise** → đến từ **đổi nano→yolo26s**. Là FP đường-gần-rác riêng biệt (không phải dedup).

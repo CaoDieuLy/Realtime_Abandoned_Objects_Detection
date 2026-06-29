@@ -360,10 +360,13 @@ def parse_args():
                          "Higher = better person/object detection (its mask is resized back to --proc-width). "
                          "YOLO cost ~ depends on --yolo-imgsz, not on this, so high detail is ~free.")
     common.add_argument("--warmup-s", type=float, default=22.0)
-    advanced.add_argument("--warmup-motion-mask", type=int, default=0,
-                          help="1=build clean_bg by a MOTION-aware median (exclude per-pixel transients during "
-                               "warm-up) so a person/door that was active during the warm-up isn't baked into the "
-                               "background (= ghost FP later). Use when the warm-up window isn't perfectly empty.")
+    common.add_argument("--warmup-motion-mask", type=int, default=1,
+                          help="DEFAULT ON. Build clean_bg by a MOTION-aware median (exclude per-pixel transients "
+                               "during warm-up) so a person/door that was MOVING during the warm-up isn't baked into "
+                               "the background (= ghost FP later, e.g. video6 f780). heal-revealed still detects baked "
+                               "agents on the plain median so this doesn't shrink the heal zone. NOTE: it perturbs "
+                               "clean_bg, which can re-time relight and add a stray FP elsewhere (measured: ABODA "
+                               "video11 +1); set 0 to disable. Prefer a clean warm-up window (empty scene) when possible.")
     common.add_argument("--max-frames", type=int, default=0)
 
     advanced.add_argument("--vibe-samples", type=int, default=30)
@@ -736,6 +739,11 @@ def main() -> int:
         initial_semantic=initial_semantic,
     )
     clean_bg_color = np.median(np.stack(warmup_frames, axis=0), axis=0).astype(np.float32) if warmup_frames else None
+    # heal-revealed detects baked agents on the PLAIN median (below). --warmup-motion-mask (B) erodes
+    # the agent's moving edges out of clean_bg, which would shrink the YOLO-detected agent region and
+    # leave its rim unprotected -> a NEW FP at the rim (measured on vid0355: heal 12.1%->10.7%). So B
+    # only feeds newdiff/state; heal-revealed keeps detecting on the full plain median.
+    clean_bg_color_for_heal = clean_bg_color
     if args.warmup_motion_mask and warmup_frames and len(warmup_frames) > 2:
         clean_bg, clean_bg_color, mcov = build_motion_aware_clean_bg(warmup_frames)
         print(f"[warmup] motion-aware clean_bg ON: {mcov * 100:.1f}% of warm-up pixel-samples excluded as motion")
@@ -747,8 +755,8 @@ def main() -> int:
     # it leaves, clean_bg becomes the REAL revealed ground within ~1s so the ghost never reaches
     # the static threshold -> no alert. A real object isn't in that mask -> untouched (still detected).
     baked_agent_mask = None
-    if args.heal_revealed and online_semantic is not None and clean_bg_color is not None:
-        clean_bg_agent_score = online_semantic.infer(np.clip(clean_bg_color, 0, 255).astype(np.uint8))
+    if args.heal_revealed and online_semantic is not None and clean_bg_color_for_heal is not None:
+        clean_bg_agent_score = online_semantic.infer(np.clip(clean_bg_color_for_heal, 0, 255).astype(np.uint8))
         if clean_bg_agent_score is not None and clean_bg_agent_score.shape[:2] != (h, w):
             clean_bg_agent_score = cv2.resize(clean_bg_agent_score, (w, h), interpolation=cv2.INTER_NEAREST)
         baked_agents = (clean_bg_agent_score >= args.tau_animate * 65535).astype(np.uint8)

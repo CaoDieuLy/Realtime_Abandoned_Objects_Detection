@@ -1,0 +1,874 @@
+{
+  "method": {
+    "model": "yolo26n-seg.pt",
+    "imgsz": 640,
+    "conf": 0.15,
+    "sample_fps": 1.0,
+    "notes": [
+      "Coverage is the union of detected instance-segmentation masks divided by frame area.",
+      "Min/max/mean are over sampled frames, not every decoded source frame.",
+      "gt_present metrics include samples between ABODA object start_frame and end_frame inclusive."
+    ]
+  },
+  "videos": {
+    "video1": {
+      "source_frames": 2189,
+      "fps": 29.97,
+      "sample_stride_frames": 30,
+      "sample_count": 73,
+      "all_samples": {
+        "animate_coverage_pct": {
+          "mean": 2.451622,
+          "min": 0.0,
+          "max": 7.825195,
+          "p95": 6.230273
+        },
+        "object_coverage_pct": {
+          "mean": 0.270254,
+          "min": 0.0,
+          "max": 0.736979,
+          "p95": 0.644857
+        },
+        "combined_coverage_pct": {
+          "mean": 2.718389,
+          "min": 0.0,
+          "max": 8.264323,
+          "p95": 6.776823
+        },
+        "animate_instances": {
+          "mean": 1.09589,
+          "min": 0.0,
+          "max": 3.0,
+          "p95": 2.0
+        },
+        "object_instances": {
+          "mean": 0.643836,
+          "min": 0.0,
+          "max": 3.0,
+          "p95": 2.0
+        }
+      },
+      "gt_object_present_samples": {
+        "sample_count": 29,
+        "animate_coverage_pct": {
+          "mean": 2.473431,
+          "min": 0.0,
+          "max": 7.825195,
+          "p95": 7.177539
+        },
+        "object_coverage_pct": {
+          "mean": 0.580269,
+          "min": 0.0,
+          "max": 0.651042,
+          "p95": 0.645508
+        },
+        "combined_coverage_pct": {
+          "mean": 3.052622,
+          "min": 0.625,
+          "max": 8.264323,
+          "p95": 7.455924
+        },
+        "animate_instances": {
+          "mean": 1.137931,
+          "min": 0.0,
+          "max": 3.0,
+          "p95": 3.0
+        },
+        "object_instances": {
+          "mean": 1.275862,
+          "min": 0.0,
+          "max": 3.0,
+          "p95": 2.0
+        }
+      }
+    },
+    "video2": {
+      "source_frames": 2818,
+      "fps": 29.97,
+      "sample_stride_frames": 30,
+      "sample_count": 94,
+      "all_samples": {
+        "animate_coverage_pct": {
+          "mean": 1.727187,
+          "min": 0.0,
+          "max": 10.120081,
+          "p95": 8.553212
+        },
+        "object_coverage_pct": {
+          "mean": 0.006449,
+          "min": 0.0,
+          "max": 0.355613,
+          "p95": 0.0
+        },
+        "combined_coverage_pct": {
+          "mean": 1.72844,
+          "min": 0.0,
+          "max": 10.120081,
+          "p95": 8.553212
+        },
+        "animate_instances": {
+          "mean": 2.606383,
+          "min": 0.0,
+          "max": 11.0,
+          "p95": 9.0
+        },
+        "object_instances": {
+          "mean": 0.031915,
+          "min": 0.0,
+          "max": 2.0,
+          "p95": 0.0
+        }
+      },
+      "gt_object_present_samples": {
+        "sample_count": 24,
+        "animate_coverage_pct": {
+          "mean": 0.919307,
+          "min": 0.306424,
+          "max": 2.481192,
+          "p95": 2.300868
+        },
+        "object_coverage_pct": {
+          "mean": 0.010441,
+          "min": 0.0,
+          "max": 0.250579,
+          "p95": 0.0
+        },
+        "combined_coverage_pct": {
+          "mean": 0.924178,
+          "min": 0.306424,
+          "max": 2.481192,
+          "p95": 2.318403
+        },
+        "animate_instances": {
+          "mean": 1.791667,
+          "min": 1.0,
+          "max": 4.0,
+          "p95": 3.0
+        },
+        "object_instances": {
+          "mean": 0.083333,
+          "min": 0.0,
+          "max": 2.0,
+          "p95": 0.0
+        }
+      }
+    },
+    "video3": {
+      "source_frames": 2608,
+      "fps": 29.97,
+      "sample_stride_frames": 30,
+      "sample_count": 87,
+      "all_samples": {
+        "animate_coverage_pct": {
+          "mean": 0.769546,
+          "min": 0.301215,
+          "max": 2.744792,
+          "p95": 1.823351
+        },
+        "object_coverage_pct": {
+          "mean": 0.147456,
+          "min": 0.0,
+          "max": 2.574074,
+          "p95": 1.092853
+        },
+        "combined_coverage_pct": {
+          "mean": 0.908778,
+          "min": 0.301215,
+          "max": 3.009549,
+          "p95": 2.069907
+        },
+        "animate_instances": {
+          "mean": 1.356322,
+          "min": 1.0,
+          "max": 3.0,
+          "p95": 2.0
+        },
+        "object_instances": {
+          "mean": 0.218391,
+          "min": 0.0,
+          "max": 1.0,
+          "p95": 1.0
+        }
+      },
+      "gt_object_present_samples": {
+        "sample_count": 29,
+        "animate_coverage_pct": {
+          "mean": 1.067319,
+          "min": 0.303241,
+          "max": 1.971354,
+          "p95": 1.793866
+        },
+        "object_coverage_pct": {
+          "mean": 0.38844,
+          "min": 0.0,
+          "max": 2.574074,
+          "p95": 1.685764
+        },
+        "combined_coverage_pct": {
+          "mean": 1.444704,
+          "min": 0.328993,
+          "max": 2.88397,
+          "p95": 2.177546
+        },
+        "animate_instances": {
+          "mean": 1.62069,
+          "min": 1.0,
+          "max": 2.0,
+          "p95": 2.0
+        },
+        "object_instances": {
+          "mean": 0.448276,
+          "min": 0.0,
+          "max": 1.0,
+          "p95": 1.0
+        }
+      }
+    },
+    "video4": {
+      "source_frames": 1169,
+      "fps": 29.97,
+      "sample_stride_frames": 30,
+      "sample_count": 39,
+      "all_samples": {
+        "animate_coverage_pct": {
+          "mean": 1.784744,
+          "min": 0.0,
+          "max": 13.226562,
+          "p95": 3.611863
+        },
+        "object_coverage_pct": {
+          "mean": 0.062381,
+          "min": 0.0,
+          "max": 0.752025,
+          "p95": 0.512355
+        },
+        "combined_coverage_pct": {
+          "mean": 1.84556,
+          "min": 0.0,
+          "max": 13.226562,
+          "p95": 3.992072
+        },
+        "animate_instances": {
+          "mean": 1.589744,
+          "min": 0.0,
+          "max": 3.0,
+          "p95": 3.0
+        },
+        "object_instances": {
+          "mean": 0.102564,
+          "min": 0.0,
+          "max": 1.0,
+          "p95": 1.0
+        }
+      },
+      "gt_object_present_samples": {
+        "sample_count": 23,
+        "animate_coverage_pct": {
+          "mean": 2.275916,
+          "min": 0.0,
+          "max": 13.226562,
+          "p95": 11.803443
+        },
+        "object_coverage_pct": {
+          "mean": 0.065129,
+          "min": 0.0,
+          "max": 0.752025,
+          "p95": 0.671354
+        },
+        "combined_coverage_pct": {
+          "mean": 2.340945,
+          "min": 0.0,
+          "max": 13.226562,
+          "p95": 11.8557
+        },
+        "animate_instances": {
+          "mean": 1.695652,
+          "min": 0.0,
+          "max": 3.0,
+          "p95": 2.9
+        },
+        "object_instances": {
+          "mean": 0.086957,
+          "min": 0.0,
+          "max": 1.0,
+          "p95": 0.9
+        }
+      }
+    },
+    "video5": {
+      "source_frames": 3297,
+      "fps": 29.97,
+      "sample_stride_frames": 30,
+      "sample_count": 110,
+      "all_samples": {
+        "animate_coverage_pct": {
+          "mean": 1.071978,
+          "min": 0.0,
+          "max": 9.030961,
+          "p95": 2.961372
+        },
+        "object_coverage_pct": {
+          "mean": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p95": 0.0
+        },
+        "combined_coverage_pct": {
+          "mean": 1.071978,
+          "min": 0.0,
+          "max": 9.030961,
+          "p95": 2.961372
+        },
+        "animate_instances": {
+          "mean": 0.727273,
+          "min": 0.0,
+          "max": 4.0,
+          "p95": 2.0
+        },
+        "object_instances": {
+          "mean": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p95": 0.0
+        }
+      },
+      "gt_object_present_samples": {
+        "sample_count": 72,
+        "animate_coverage_pct": {
+          "mean": 0.777838,
+          "min": 0.0,
+          "max": 3.872396,
+          "p95": 2.873524
+        },
+        "object_coverage_pct": {
+          "mean": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p95": 0.0
+        },
+        "combined_coverage_pct": {
+          "mean": 0.777838,
+          "min": 0.0,
+          "max": 3.872396,
+          "p95": 2.873524
+        },
+        "animate_instances": {
+          "mean": 0.611111,
+          "min": 0.0,
+          "max": 3.0,
+          "p95": 2.0
+        },
+        "object_instances": {
+          "mean": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p95": 0.0
+        }
+      }
+    },
+    "video6": {
+      "source_frames": 6744,
+      "fps": 29.97,
+      "sample_stride_frames": 30,
+      "sample_count": 225,
+      "all_samples": {
+        "animate_coverage_pct": {
+          "mean": 0.623524,
+          "min": 0.0,
+          "max": 19.431713,
+          "p95": 1.381655
+        },
+        "object_coverage_pct": {
+          "mean": 0.00528,
+          "min": 0.0,
+          "max": 1.188079,
+          "p95": 0.0
+        },
+        "combined_coverage_pct": {
+          "mean": 0.628804,
+          "min": 0.0,
+          "max": 19.431713,
+          "p95": 1.381655
+        },
+        "animate_instances": {
+          "mean": 0.173333,
+          "min": 0.0,
+          "max": 5.0,
+          "p95": 1.0
+        },
+        "object_instances": {
+          "mean": 0.004444,
+          "min": 0.0,
+          "max": 1.0,
+          "p95": 0.0
+        }
+      },
+      "gt_object_present_samples": {
+        "sample_count": 46,
+        "animate_coverage_pct": {
+          "mean": 2.115734,
+          "min": 0.0,
+          "max": 19.431713,
+          "p95": 14.775608
+        },
+        "object_coverage_pct": {
+          "mean": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p95": 0.0
+        },
+        "combined_coverage_pct": {
+          "mean": 2.115734,
+          "min": 0.0,
+          "max": 19.431713,
+          "p95": 14.775608
+        },
+        "animate_instances": {
+          "mean": 0.5,
+          "min": 0.0,
+          "max": 5.0,
+          "p95": 3.0
+        },
+        "object_instances": {
+          "mean": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p95": 0.0
+        }
+      }
+    },
+    "video7": {
+      "source_frames": 4801,
+      "fps": 29.97,
+      "sample_stride_frames": 30,
+      "sample_count": 161,
+      "all_samples": {
+        "animate_coverage_pct": {
+          "mean": 0.360628,
+          "min": 0.0,
+          "max": 9.000289,
+          "p95": 1.794271
+        },
+        "object_coverage_pct": {
+          "mean": 0.056479,
+          "min": 0.0,
+          "max": 1.4864,
+          "p95": 0.820891
+        },
+        "combined_coverage_pct": {
+          "mean": 0.415065,
+          "min": 0.0,
+          "max": 9.000289,
+          "p95": 2.551215
+        },
+        "animate_instances": {
+          "mean": 0.118012,
+          "min": 0.0,
+          "max": 2.0,
+          "p95": 1.0
+        },
+        "object_instances": {
+          "mean": 0.062112,
+          "min": 0.0,
+          "max": 1.0,
+          "p95": 1.0
+        }
+      },
+      "gt_object_present_samples": {
+        "sample_count": 39,
+        "animate_coverage_pct": {
+          "mean": 0.32745,
+          "min": 0.0,
+          "max": 1.794271,
+          "p95": 1.721383
+        },
+        "object_coverage_pct": {
+          "mean": 0.106081,
+          "min": 0.0,
+          "max": 0.847222,
+          "p95": 0.822251
+        },
+        "combined_coverage_pct": {
+          "mean": 0.430185,
+          "min": 0.0,
+          "max": 2.540509,
+          "p95": 2.47202
+        },
+        "animate_instances": {
+          "mean": 0.230769,
+          "min": 0.0,
+          "max": 2.0,
+          "p95": 1.0
+        },
+        "object_instances": {
+          "mean": 0.128205,
+          "min": 0.0,
+          "max": 1.0,
+          "p95": 1.0
+        }
+      }
+    },
+    "video8": {
+      "source_frames": 4781,
+      "fps": 29.97,
+      "sample_stride_frames": 30,
+      "sample_count": 160,
+      "all_samples": {
+        "animate_coverage_pct": {
+          "mean": 0.417596,
+          "min": 0.0,
+          "max": 8.427083,
+          "p95": 3.953805
+        },
+        "object_coverage_pct": {
+          "mean": 0.214703,
+          "min": 0.0,
+          "max": 2.631076,
+          "p95": 2.271253
+        },
+        "combined_coverage_pct": {
+          "mean": 0.631232,
+          "min": 0.0,
+          "max": 8.427083,
+          "p95": 4.606178
+        },
+        "animate_instances": {
+          "mean": 0.11875,
+          "min": 0.0,
+          "max": 2.0,
+          "p95": 1.0
+        },
+        "object_instances": {
+          "mean": 0.1,
+          "min": 0.0,
+          "max": 2.0,
+          "p95": 1.0
+        }
+      },
+      "gt_object_present_samples": {
+        "sample_count": 39,
+        "animate_coverage_pct": {
+          "mean": 0.349285,
+          "min": 0.0,
+          "max": 4.613426,
+          "p95": 4.4261
+        },
+        "object_coverage_pct": {
+          "mean": 0.757137,
+          "min": 0.0,
+          "max": 2.287326,
+          "p95": 2.283044
+        },
+        "combined_coverage_pct": {
+          "mean": 1.103432,
+          "min": 0.0,
+          "max": 6.756076,
+          "p95": 4.805237
+        },
+        "animate_instances": {
+          "mean": 0.102564,
+          "min": 0.0,
+          "max": 2.0,
+          "p95": 1.0
+        },
+        "object_instances": {
+          "mean": 0.333333,
+          "min": 0.0,
+          "max": 1.0,
+          "p95": 1.0
+        }
+      }
+    },
+    "video9": {
+      "source_frames": 2485,
+      "fps": 29.97,
+      "sample_stride_frames": 30,
+      "sample_count": 83,
+      "all_samples": {
+        "animate_coverage_pct": {
+          "mean": 1.311046,
+          "min": 0.0,
+          "max": 9.512442,
+          "p95": 5.767303
+        },
+        "object_coverage_pct": {
+          "mean": 0.103069,
+          "min": 0.0,
+          "max": 2.414931,
+          "p95": 0.875347
+        },
+        "combined_coverage_pct": {
+          "mean": 1.410946,
+          "min": 0.0,
+          "max": 10.255498,
+          "p95": 6.378762
+        },
+        "animate_instances": {
+          "mean": 0.313253,
+          "min": 0.0,
+          "max": 2.0,
+          "p95": 1.0
+        },
+        "object_instances": {
+          "mean": 0.096386,
+          "min": 0.0,
+          "max": 2.0,
+          "p95": 1.0
+        }
+      },
+      "gt_object_present_samples": {
+        "sample_count": 48,
+        "animate_coverage_pct": {
+          "mean": 0.379648,
+          "min": 0.0,
+          "max": 4.404803,
+          "p95": 3.587254
+        },
+        "object_coverage_pct": {
+          "mean": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p95": 0.0
+        },
+        "combined_coverage_pct": {
+          "mean": 0.379648,
+          "min": 0.0,
+          "max": 4.404803,
+          "p95": 3.587254
+        },
+        "animate_instances": {
+          "mean": 0.145833,
+          "min": 0.0,
+          "max": 2.0,
+          "p95": 1.0
+        },
+        "object_instances": {
+          "mean": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p95": 0.0
+        }
+      }
+    },
+    "video10": {
+      "source_frames": 2260,
+      "fps": 29.97,
+      "sample_stride_frames": 30,
+      "sample_count": 76,
+      "all_samples": {
+        "animate_coverage_pct": {
+          "mean": 1.065253,
+          "min": 0.0,
+          "max": 10.785012,
+          "p95": 5.788267
+        },
+        "object_coverage_pct": {
+          "mean": 0.558122,
+          "min": 0.0,
+          "max": 1.660301,
+          "p95": 1.16428
+        },
+        "combined_coverage_pct": {
+          "mean": 1.61734,
+          "min": 0.0,
+          "max": 10.785012,
+          "p95": 5.788267
+        },
+        "animate_instances": {
+          "mean": 0.276316,
+          "min": 0.0,
+          "max": 2.0,
+          "p95": 1.25
+        },
+        "object_instances": {
+          "mean": 0.947368,
+          "min": 0.0,
+          "max": 2.0,
+          "p95": 2.0
+        }
+      },
+      "gt_object_present_samples": {
+        "sample_count": 34,
+        "animate_coverage_pct": {
+          "mean": 0.603486,
+          "min": 0.0,
+          "max": 4.00463,
+          "p95": 3.431192
+        },
+        "object_coverage_pct": {
+          "mean": 1.140114,
+          "min": 1.10706,
+          "max": 1.229745,
+          "p95": 1.201751
+        },
+        "combined_coverage_pct": {
+          "mean": 1.739992,
+          "min": 1.10706,
+          "max": 5.125868,
+          "p95": 4.558652
+        },
+        "animate_instances": {
+          "mean": 0.264706,
+          "min": 0.0,
+          "max": 2.0,
+          "p95": 2.0
+        },
+        "object_instances": {
+          "mean": 2.0,
+          "min": 2.0,
+          "max": 2.0,
+          "p95": 2.0
+        }
+      }
+    },
+    "video11": {
+      "source_frames": 4501,
+      "fps": 30.0,
+      "sample_stride_frames": 30,
+      "sample_count": 151,
+      "all_samples": {
+        "animate_coverage_pct": {
+          "mean": 3.308939,
+          "min": 1.191406,
+          "max": 5.356445,
+          "p95": 4.556315
+        },
+        "object_coverage_pct": {
+          "mean": 0.018568,
+          "min": 0.0,
+          "max": 0.33138,
+          "p95": 0.153158
+        },
+        "combined_coverage_pct": {
+          "mean": 3.317372,
+          "min": 1.191406,
+          "max": 5.442383,
+          "p95": 4.556315
+        },
+        "animate_instances": {
+          "mean": 10.483444,
+          "min": 5.0,
+          "max": 15.0,
+          "p95": 14.0
+        },
+        "object_instances": {
+          "mean": 0.119205,
+          "min": 0.0,
+          "max": 2.0,
+          "p95": 1.0
+        }
+      },
+      "gt_object_present_samples": {
+        "sample_count": 123,
+        "animate_coverage_pct": {
+          "mean": 3.380772,
+          "min": 1.191406,
+          "max": 5.356445,
+          "p95": 4.557617
+        },
+        "object_coverage_pct": {
+          "mean": 0.021034,
+          "min": 0.0,
+          "max": 0.33138,
+          "p95": 0.162695
+        },
+        "combined_coverage_pct": {
+          "mean": 3.390498,
+          "min": 1.191406,
+          "max": 5.442383,
+          "p95": 4.557617
+        },
+        "animate_instances": {
+          "mean": 10.772358,
+          "min": 5.0,
+          "max": 15.0,
+          "p95": 14.0
+        },
+        "object_instances": {
+          "mean": 0.130081,
+          "min": 0.0,
+          "max": 2.0,
+          "p95": 1.0
+        }
+      }
+    },
+    "vid0103": {
+      "source_frames": 1021,
+      "fps": 29.97,
+      "sample_stride_frames": 30,
+      "sample_count": 35,
+      "all_samples": {
+        "animate_coverage_pct": {
+          "mean": 5.68887,
+          "min": 0.0,
+          "max": 9.744358,
+          "p95": 9.678183
+        },
+        "object_coverage_pct": {
+          "mean": 1.086048,
+          "min": 0.0,
+          "max": 9.310909,
+          "p95": 8.514212
+        },
+        "combined_coverage_pct": {
+          "mean": 6.051848,
+          "min": 0.0,
+          "max": 10.385658,
+          "p95": 10.162867
+        },
+        "animate_instances": {
+          "mean": 1.714286,
+          "min": 0.0,
+          "max": 4.0,
+          "p95": 3.0
+        },
+        "object_instances": {
+          "mean": 0.514286,
+          "min": 0.0,
+          "max": 4.0,
+          "p95": 2.0
+        }
+      },
+      "gt_object_present_samples": null
+    },
+    "vid0355": {
+      "source_frames": 425,
+      "fps": 15.0,
+      "sample_stride_frames": 15,
+      "sample_count": 29,
+      "all_samples": {
+        "animate_coverage_pct": {
+          "mean": 6.326706,
+          "min": 0.0,
+          "max": 11.333232,
+          "p95": 10.650598
+        },
+        "object_coverage_pct": {
+          "mean": 0.032736,
+          "min": 0.0,
+          "max": 0.500834,
+          "p95": 0.269104
+        },
+        "combined_coverage_pct": {
+          "mean": 6.339224,
+          "min": 0.0,
+          "max": 11.333232,
+          "p95": 10.650598
+        },
+        "animate_instances": {
+          "mean": 2.37931,
+          "min": 0.0,
+          "max": 5.0,
+          "p95": 5.0
+        },
+        "object_instances": {
+          "mean": 0.068966,
+          "min": 0.0,
+          "max": 1.0,
+          "p95": 0.6
+        }
+      },
+      "gt_object_present_samples": null
+    }
+  }
+}

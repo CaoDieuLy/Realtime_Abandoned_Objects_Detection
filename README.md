@@ -42,6 +42,7 @@ Bắt buộc truyền **`--video`** hoặc **`--camera-index`**.
 | `--bg-learn-seconds` | thời gian học **nền sạch** | **phải kết thúc TRƯỚC khi vật xuất hiện**. Vật vào sớm → đặt nhỏ (vd 3–8s); cảnh trống lúc đầu → để 20s |
 | `--video` / `--camera-index` | nguồn video hay camera | bắt buộc chọn 1 |
 | `--heal-revealed 0/1` | trị "ghost" khi **xe/người đỗ-rồi-đi** | mặc định ON; đặt 0 nếu muốn tối đa thận trọng an ninh |
+| `--warmup-motion-mask 0/1` | nền sạch loại **transient ĐỘNG** lúc học (người/cửa đi qua không bị nướng vào nền) | **mặc định ON**; đặt 0 nếu thấy FP lạ ở cảnh khác. Tốt nhất vẫn là chọn **cửa-sổ-warmup lúc cảnh trống** (qua `--bg-learn-seconds`) |
 | `--proc-width` / `--sem-proc-width` | độ phân giải xử lý / cho YOLO | camera ≥1080p giữ mặc định 640/960 là tốt |
 
 `python run_rtsbs_aod.py --help` chia 2 nhóm **common** (hay dùng) và **advanced** (đã tuned, ít khi đụng).

@@ -342,26 +342,29 @@ Bù penalty nano→s (~2× chậm) bằng backend nhanh hơn. Drop-in qua ultral
 
 Chạy toàn bộ 13 video **chỉ bằng default** (no-feedback · OpenVINO `yolo26s-seg` · heal-revealed ON · relight-tuned · `crowd-n=10`), chỉ khác warmup (vid0103=8s, vid0355=3s, còn lại 20s). Chấm HIT = box cách GT-box ≤25px.
 
+**Cấu hình**: default hiện tại — **B+C-fix** (`--warmup-motion-mask 1`, `--alert-min-support 0.05`, light-struct, dedup, heal-revealed detect-trên-plain) + yolo26s OpenVINO. Sweep này chạy `--gather-px 0` (kết quả trong `results_bcfix_g0/`). Warm-up: vid0103=8s, vid0355=3s, còn lại 20s.
+
 | video | events | HIT | FP | ghi chú |
 |---|---|---|---|---|
 | video1 | 1 | 1/1 | 0 | sạch |
-| video2 | 1 | (1/1) | (0) | bắt đúng vật nhưng tâm lệch 26px → box-gap chấm strict thành "miss/FP"; thực tế HIT |
+| video2 | 1 | 1/1 | 0 | HIT (tâm lệch, box-tí do gather-0) |
 | video3 | 1 | 1/1 | 0 | sạch |
-| video4 | 1 | 1/1 | 0 | sạch |
-| video5 | 1 | 1/1 | 0 | sạch (dev cũ 2ev/1FP → nay sạch) |
-| video6 | 8 | 2/2 | 5 | FP hỗn hợp: **góc cầu thang đổi-sáng** (light-struct diệt được) + **warmup-baked người** (f780: người đứng suốt 20s warmup→nướng vào nền; heal-revealed sót vì người mờ trong median) + đèn-tắt/brightening-sát-ngưỡng |
-| video7 | 4 | 1/1 | 2 | 2 FP lighting-residual + 1 leg-FP (person-recall) |
-| video8 | 3 | 1/1 | 1 | 1 FP lẻ |
-| video9 | 2 | 1/1 | 0 | **báo lặp 2 lần cùng vật** (dedup bị candidate-churn đánh bại — xem §3.12) |
+| video4 | 1 | 1/1 | 0 | 🆕 lần đầu test — **bắt được**, sạch |
+| video5 | 2 | 1/1 | 1 | 🆕 lần đầu test — **bắt được** + 1 FP |
+| video6 | 3 | 2/2 | 1 | **f780 HẾT** (B default-on dọn warmup-baked); chỉ còn f5148 (đèn-tắt cục bộ = scene-change §4) |
+| video7 | 4 | 1/1 | **3** | 2 FP lighting-residual (f2035/f2052) + 1 FP riêng dưới balo (f3785) |
+| video8 | 2 | 1/1 | 1 | 1 FP lẻ |
+| video9 | 1 | 1/1 | 0 | dedup-cooldown trị báo-lặp (dev cũ 2ev) |
 | video10 | 2 | 1/1 | 1 | 1 FP lẻ |
-| video11 | 12 | 1/1 | 10 | **FP đám đông** (>40 người; perception) |
-| vid0103 | 2 | (noGT) | — | car thật, sạch |
-| vid0355 | 2 | (noGT) | — | máy giặt HIT, car-ghost đã trị |
+| video11 | 12 | 1/1 | 11 | **FP đám đông** (>40 người; trần perception) |
+| vid0103 | 3 | (noGT) | — | **1 FP** (304,212) = warmup-baked (người đổ rác đứng suốt 8s warmup→nướng nền); §4 warmup-nhiễm |
+| vid0355 | 2 | (noGT) | — | **1 máy giặt báo LẶP 2 vị trí** (459,253)+(512,204) cách ~75px > dedup-dist 40 → dedup không gộp; car-ghost đã trị |
 
-**TỔNG video1–11: Recall 12/12 (video2 bắt được, chỉ lệch tâm) · FP = 20.**
-- So **baseline phát triển** (nano, crowd-6, trước fix) FP ≈ 42 → **release FP = 20 (giảm ~½)**: nhờ **relight-tuning** (v7 21→2, v6 7→5), **yolo26s** (recall người), **presence-memory** (owner-gate), **crowd-n 10**.
-- FP còn lại dồn **video11 (10, đám đông) + video6 (5) + video7 (2) = 17/20** — đúng 2 nhóm cần xử tiếp (P1: dedup/đổi-sáng-cục-bộ; P2: perception đám đông).
-- *(FPS bảng này 4–6 do máy throttle/contention lúc chạy qua đêm; benchmark sạch ~7–9 FPS — xem §3.10.)*
+**TỔNG 11 video GT: Recall 12/12 (gồm video4/5 lần đầu — KHÔNG blind-spot mới) · FP = 18.**
+- Đây là con số **full-ABODA thật đầu tiên** (trước đó dev chỉ benchmark 9 video, sót video4/5).
+- FP dồn **video11 (11, đám đông) + video7 (3) + video6/8/10/5 (1 mỗi) = 18** — trần perception (đám đông) + lighting-residual + scene-change là phần còn lại.
+- **Lưu ý đếm**: metric tự động (gap-mép-bbox) từng đếm nhầm box-to-chạm-GT thành hit; đã sửa tay (video7 2→3). gather-0 box-tí làm tâm event lệch → cần bbox tử tế (gather≥5 / bbox-refine cải tiến) để đếm tin cậy hơn (xem §4).
+- *(FPS ~4–6 do contention; benchmark sạch ~7–9 FPS — §3.10.)*
 
 ## 3.12. FP còn lại sau release: dedup / warmup-ghost / lighting / scene-state-change
 
