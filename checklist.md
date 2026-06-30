@@ -70,10 +70,13 @@
 
 ## 2. ⏳ CHƯA LÀM — ACTIONABLE
 
-### P2-bbox — bbox cảnh báo ÔM VẬT (gather-0 cho box tí xíu) ⭐ ưu tiên
-- **Triệu chứng**: với `--gather-px 0` box chỉ 1 góc tí của vật (video8: 23×11 vs GT 208×67). Ngay cả gather-5 chỉ ~52% vật (mask khác-nền không phủ chỗ vật trùng-sáng-nền).
-- **Phương án (tăng dần)**: (a) gather-px ≥5 + fill-holes; (b) bbox-refine = **union(tight,newdiff) + CLOSE 10px + fill-holes**; (c) **ưu tiên mask YOLO-seg** của instance phủ candidate (khít nhất, nhưng chỉ vật COCO → fallback diff-box).
-- **Test**: video8 (máy giặt, non-COCO) + video1/4 (vật rõ) — box phải ôm ≥80% vật, không over-grow dính bóng.
+### ❌ P2-bbox — bbox ÔM VẬT (box tí) — ĐÃ THỬ 3 HƯỚNG → CHỐT box-tight (A). KHÔNG thử lại.
+- **Triệu chứng**: `--gather-px 0` box chỉ 1 mảnh tí của vật (video8 túi đàn: 23×11 vs GT 208×67).
+- **Cơ chế thật (đo connectivity)**: diff cháy theo **VIỀN vật ĐỨT-QUÃNG** (lòng vật trùng độ sáng nền → không vào mask, coverage chỉ ~18%); viền tách **8 component rời**; tâm-alert rơi vào **KHE giữa các mảnh** → refine `lab[tâm]=0` → fallback lấy mảnh tí trong matcher-bbox. *(KHÔNG phải "thiếu tín hiệu" — viền vẫn trải khắp vật.)*
+- **❌ Hướng 1 — morphology fill (`--bbox-refine` union+CLOSE) → REVERT (overfit)**: CLOSE-11 nối được viền video8 thành 157×53 NHƯNG: `bbox-close=11` **tuned từ sweep trên video8** (không scale-invariant — kernel nối-khe-nội-vật cũng nối-khe-giữa-2-vật, tỉ lệ đổi theo cam/khoảng-cách); density-gate chỉ là **proxy thô** che sự mong manh. **video11 over-merge** (box 56×113 trùm nhiều người). = đúng bẫy targeted-B. → revert về **A: box-tight tổng quát 0-tuning** (recall/FP KHÔNG phụ thuộc kích-thước-box, chỉ tâm±margin).
+- **❌ Hướng 2 — open-vocab mask (YOLOE-26s-seg) → LOẠI**: prompt-free 0.1-0.6 FPS + 195-detect (vocab 4500-lớp). text-prompt 2.5-3.9 FPS PyTorch, mask **MƯỢT** (blob liền hơn diff gạch-đứt) nhưng **MISS vật nhỏ** (video6 bags 60×35) + **mask thiếu** (video8 IoU 0.24, chỉ thân-giữa). Vật AOD nhỏ/lạ/xa = điểm yếu cố hữu detector web-trained → **không thay được diff-box**.
+- **❌ Hướng 3 — augment animate-gate bằng YOLOE-person (giảm FP crowd) → LOẠI (tạo FN)**: chạy YOLOE-person tại frame mỗi event (results_bcfix_g0: TP9 FP21). conf≥0.25: **FP gated 0/21, TP gated 1/9** (xóa 0 FP, **tạo 1 FN**). video11: 0/11 FP, **1/1 TP gated**. Vì: (a) FP-crowd alert **SAU khi người rời** → person conf~0 tại alert → không gate được; (b) vật thật đôi khi có **chủ đứng cạnh** → gate nhầm vật thật = FN. Gate đúng-cái-không-nên. Ngược stance "FN tệ hơn FP".
+- **CHỐT**: box-tight (A) là tổng quát nhất. Box-sát-vật-nhỏ + FP-crowd là **trần cố hữu realtime-CPU** (lối ra duy nhất = detector mạnh hơn nhưng không realtime CPU + vẫn miss vật nhỏ).
 
 ### P2-dedup-vật-to — vid0355: 1 máy giặt báo LẶP 2 vị trí
 - **Triệu chứng**: máy giặt to → 2 alert (459,253)+(512,204) cách ~75px > `--dedup-dist` 40 → dedup không gộp → báo lặp.
