@@ -389,7 +389,7 @@ Chạy toàn bộ 13 video **chỉ bằng default** (no-feedback · OpenVINO `yo
 
 ## 3.13. Tỷ lệ foreground (motion-object) trên khung hình — instance-occupancy
 
-**Là thước đo DIỆN TÍCH** (phần trăm pixel khung hình bị mask đối tượng chiếm), **KHÔNG phải đếm số người**. Tách rời số-lượng: vài người/xe **to & gần cam** có thể lấp **nhiều %** hơn rất nhiều người ở xa.
+**Là thước đo DIỆN TÍCH** (phần trăm pixel khung hình bị mask đối tượng chiếm), **KHÔNG phải đếm số người**. Tách rời số-lượng: vài người/xe **to & gần cam** có thể lấp **nhiều %** hơn rất nhiều người ở xa. (Mục này là metric **detector/YOLO**; audit chặt-chẽ hơn — tách **3 đại lượng** mắt-người/detector-count/foreground-khác-nền — ở [REPORT §6.3](REPORT.md), kèm `metrics/scene_foreground_occupancy_1fps.json`.)
 
 - **Cách đo**: `tools/measure_instance_occupancy.py` chạy YOLO-seg (`yolo26n`, imgsz 640, conf 0.15), lấy mẫu **1 frame/giây**, union mask theo nhóm class. Báo thô: [`metrics/aboda_instance_occupancy_1fps.json`](metrics/aboda_instance_occupancy_1fps.json). Định nghĩa: `animate-FG = union(người/xe/động-vật)`, `object-FG = union(balo/ô/túi/vali/chai)`, `coverage = area(mask)/area(frame)`.
 - **Bảng đầy đủ 13 video** ở [README §"Mức chiếm dụng foreground"](README.md). Điểm mấu chốt (đúng yêu cầu "đo cả vid ít người lấp nhiều % cam"):

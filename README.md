@@ -84,7 +84,7 @@ Vì dựa trên "khác nền sạch + đứng yên + không-phải-người/xe":
 
 **Mức chiếm dụng foreground theo instance mask**
 
-Đây là thước đo dùng để mô tả cảnh theo **diện tích pixel bị đối tượng chiếm**, đồng thời vẫn giữ số lượng đối tượng. Không suy ra mật độ từ số người đơn thuần. **% diện tích ≠ số lượng**: vài vật to & gần cam có thể lấp nhiều % hơn rất nhiều người ở xa — vd **vid0355 (≈1 xe) = 6,33%** > **video11 (≈40 người) = 3,31%**. (Phân tích: [solution_analysis §3.13](solution_analysis.md).)
+Đây là thước đo cảnh theo **diện tích pixel bị đối tượng chiếm** (mask **detector/YOLO**), giữ kèm số lượng. **% diện tích ≠ số lượng**: vài vật to & gần cam lấp nhiều % hơn rất nhiều người ở xa — vd **vid0355 (≈1 xe) = 6,33%** animate-mask > **video11 (≈40 người) = 3,31%**. ⚠ Đây chỉ là **1 trong 3 đại lượng mật-độ** (mắt-người ước-lượng · detector-count · foreground-khác-nền) — audit đầy đủ + so sánh ba đại lượng ở **[REPORT §6.3](REPORT.md)** (và [solution_analysis §3.13](solution_analysis.md)).
 
 ```text
 animate-FG = union(mask người / xe / động vật được detector nhận ra)

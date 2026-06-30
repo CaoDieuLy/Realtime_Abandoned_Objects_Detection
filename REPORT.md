@@ -36,7 +36,7 @@ Phát hiện vật thể bỏ quên là bài toán giám sát: cho một camera 
 - Một **kiến trúc nền-kép cố định** (§4.1) giải quyết trực tiếp thách thức (1): nền-sạch là **median đóng băng** của giai đoạn khởi động, nên vật mới *luôn* khác nó.
 - **Bốn lớp cập-nhật-nền/ánh-sáng** (§4.5) và **bốn cổng cảnh-báo** (§4.6) — mỗi cơ chế nhắm một nhóm báo-nhầm cụ thể, được *đo ablation* (§6.4).
 - Một **cổng bằng-chứng (evidence-gate)** mới (§4.6) loại các *candidate "ma"* — vật đã bị một lớp cập-nhật-nền hấp thụ nhưng FSM còn giữ trễ.
-- Một **thước đo chiếm-dụng-foreground theo diện-tích** (§6.3) mô tả mật độ cảnh độc lập với số-đếm đối tượng.
+- Một **audit mật độ cảnh** (§6.3) tách ba đại lượng dễ bị lẫn: số người ước lượng bằng mắt, số instance mà detector nhìn thấy, và diện-tích foreground thật theo nền sạch.
 - Một **ứng dụng GUI** (§4.7) cho triển khai thực: chọn video/camera, vẽ hộp cảnh báo trực tiếp, danh sách vật-bỏ-quên tự cập nhật khi vật được lấy đi, lưu JSON từng vật.
 
 ---
@@ -223,7 +223,18 @@ stateDiagram-v2
     REJECTED --> [*]
 ```
 
-GUI: chọn **video** (hiện FPS xử lý) / **camera** (chọn FPS); vẽ hộp đỏ từ khung phát-hiện trở đi; **pop-up danh sách** vật đang xác nhận; **bấm hộp** để confirm/reject; **mỗi vật → 1 JSON** (`object_<id>.json`: id, frame/giây báo, tâm, bbox, status `present/taken/rejected`).
+GUI: chọn **video** (hiện FPS xử lý) / **camera** (chọn FPS); vẽ hộp đỏ từ khung phát-hiện trở đi; **pop-up danh sách** vật đang xác nhận; **bấm hộp** để confirm/reject; **mỗi vật → 1 JSON** (`object_<id>.json`). Ví dụ thực (video6, vật #1 bị lấy đi ở khung 4144):
+
+```json
+{
+  "id": 1, "status": "taken", "source": "video6.avi",
+  "frame_alert": 3629, "t_alert_s": 121.09,
+  "center": [187, 286], "bbox": [169, 276, 205, 297],
+  "frame_taken": 4144, "t_taken_s": 138.27
+}
+```
+
+`status` chuyển `present → taken` (mất support tại hộp) hoặc `present → rejected` (người dùng bác). Đây là đầu ra dùng để tích hợp với hệ cảnh báo/log ngoài.
 
 ---
 
@@ -277,6 +288,7 @@ Triết lý an ninh: **bỏ-sót-vật (false-negative) tệ hơn báo-nhầm (f
 
 - **Recall** = số vật GT được bắt / tổng vật GT (một vật là *hit* nếu tâm cảnh-báo nằm trong/sát hộp GT).
 - **FP** = số sự kiện không khớp vật GT nào.
+- Hai video `vid0103` và `vid0355` **không có GT chính thức** trong bộ chấm, nên được báo cáo như case-study/triển-khai thực và **không cộng vào FP=18** của 11 video GT.
 - **Cấu hình**: *một cấu hình mặc định* cho cả 13 video; chỉ khác `--bg-learn-seconds` theo cảnh (vid0103=8s, vid0355=3s, còn lại 20s).
 - **Phần cứng**: CPU Intel Tiger Lake (8 luồng), **không GPU**.
 
@@ -296,24 +308,32 @@ Triết lý an ninh: **bỏ-sót-vật (false-negative) tệ hơn báo-nhầm (f
 | video10 | 2 | 1/1 | 1 | 1 FP lẻ |
 | video11 | 12 | 1/1 | 11 | FP đám đông (>40 người) |
 | **TỔNG (12 vật GT)** | | **Recall 12/12** | **FP 18** | |
-| vid0103 | 3 | (no GT) | — | 1 FP warmup-nhiễm |
+| vid0103 | 3 | (no GT) | — | 1 case warmup-nhiễm đã phân tích |
 | vid0355 | 2 | (no GT) | — | 1 máy giặt báo-lặp 2 vị trí |
 
-**Recall 12/12** (bắt được mọi vật mục tiêu, gồm video4/5 lần đầu kiểm). FP dồn ở **video11 (11, đám đông)** và **video7 (3, lighting)**; 5 cảnh sạch 0 FP.
+**Recall 12/12** (bắt được mọi vật mục tiêu, gồm video4/5 lần đầu kiểm). FP dồn ở **video11 (11, đám đông)** và **video7 (3, lighting)**; 5 cảnh sạch 0 FP. Do backend `pybgs` có dao động nhỏ giữa các lần chạy, số FP ở cảnh đông có thể lệch khoảng ±1; bảng này lấy đúng sweep lưu trong `results_bcfix_g0/`.
 
-### 6.3. Phân tích chiếm-dụng foreground theo diện-tích
+**Precision theo ngữ cảnh.** Precision tổng = 12/(12+18) ≈ **40%**. Nhưng FP **không phân bố đều** — chúng tụ ở hai cảnh *biết trước là khó*: bỏ **video11** (đám đông, trần perception) còn 7 FP/10 cảnh → precision **63%**; bỏ thêm **video7** (lighting-ramp) còn **4 FP/9 cảnh → precision 75%**. Vì hệ **thiên-recall cho an ninh**, FP còn lại thuộc loại **dễ hậu-kiểm** (người/đổi-sáng) — chấp nhận được hơn nhiều so với **bỏ-sót-vật** (recall = 100%). Đây là đánh đổi có chủ đích, không phải khuyết điểm ngẫu nhiên.
 
-Thước đo **diện-tích** (`coverage = area(mask)/area(frame)`, đo bằng `yolo26n` lấy-mẫu 1Hz), **tách rời số-đếm**: vài vật to & gần cam lấp nhiều % hơn rất nhiều người ở xa.
+### 6.3. Audit mật độ người và foreground thật của cảnh
 
-**Bảng 4 — Chiếm-dụng (trích).**
+Phần này không dùng `occupancy` của YOLO như "mật độ thật". Chúng tôi tách ba đại lượng:
 
-| Cảnh | #instance (TB/max) | animate mask %(TB/max) | Đọc |
-|---|---|---|---|
-| **vid0355** (≈1 xe gần) | 2.4 / 5 | **6.33 / 11.33%** | ÍT vật, % CAO |
-| **video11** (≈40 người xa) | 10.5 / 15 | 3.31 / 5.36% | NHIỀU người, % thấp hơn |
-| video6 (lobby) | 0.2 / 5 | 0.62 / 19.43% | thường vắng, lúc đông max ~19% |
+- **Người thực tế ước lượng bằng mắt**: audit trực quan trên các frame đại diện/case-study; không phải annotation GT đầy đủ từng frame.
+- **YOLO count**: số instance `animate` mà detector nhìn thấy ở mẫu 1Hz (`yolo26n`, `imgsz=640`, `conf=0.15`) — dùng để chỉ ra giới hạn perception.
+- **Clean-bg foreground**: tỷ lệ pixel khác nền sạch, tính độc lập với YOLO: `abs(gray-clean_bg) >= 40`, morph-open 3x3, lấy mẫu 1Hz sau warmup. Đại lượng này phản ánh mức "khác nền" thật theo camera, nhưng **có cả người, vật, bóng và đổi sáng**, nên không đồng nghĩa với mật độ người.
 
-⇒ **% diện-tích ≠ số-lượng**. Vì vậy hệ thống báo cáo *cả hai*: `coverage` (mức lấp khung) và detected-count; owner-gate dùng *count* (`--crowd-n`) để quyết bật/tắt.
+**Bảng 4 — Mật độ cảnh: audit bằng mắt vs detector vs foreground khác nền.**
+
+| Cảnh | Người/vật thực tế ước lượng | YOLO animate count (TB/max) | Clean-bg FG % (TB/P95/max) | Đọc |
+|---|---:|---:|---:|---|
+| **video11** (sảnh đông) | >40 người ở peak | 10.5 / 15 | 4.39 / 5.11 / 5.49 | Detector sót/ghép người xa; đây là trần perception gây 11 FP |
+| **vid0355** (camera 1080p+) | 1 xe gần + máy giặt/vài người | 2.4 / 5 | 4.07 / 7.13 / 7.94 | Ít người nhưng vật/xe gần cam chiếm nhiều pixel |
+| **video6** (lobby) | thường vắng, có đoạn đông cục bộ | 0.2 / 5 | 9.77 / 36.42 / 37.42 | Peak foreground cao do người/đổi sáng cục bộ; liên quan FP đèn-tắt |
+| **video7** (phòng học) | ít người, không phải cảnh đông | 0.1 / 2 | 44.27 / 64.17 / 67.15 | Foreground khác nền rất cao chủ yếu vì ramp/đổi sáng, không phải mật độ người |
+| **video8** (phòng học) | ít người, vật lớn trên bàn | 0.1 / 2 | 42.89 / 55.91 / 56.52 | Nền/ánh sáng lệch mạnh làm FG pixel cao dù cảnh không đông |
+
+Kết luận: **mật độ người thực tế, số người detector thấy, và foreground pixel khác nền là ba đại lượng khác nhau**. Với AOD, `clean-bg FG%` hữu ích để giải thích cảnh khó do nền/ánh sáng; `YOLO count` hữu ích để giải thích lỗi perception; còn "mật độ người thật" chỉ có thể chính xác nếu có annotation người thủ công. Trong báo cáo này, các số người thật là audit trực quan, còn các số pixel được lưu ở `metrics/scene_foreground_occupancy_1fps.json`.
 
 ### 6.4. Nghiên cứu ablation
 
@@ -355,7 +375,7 @@ Các hình dưới dùng hai nguồn: ảnh cảnh-báo chuẩn từ `results_bc
 
 ![pipeline masks](report_figures/fig_pipeline_masks.png)
 
-Đọc theo thứ tự: **(1) frame** hiện tại vs **(2) clean_bg** đóng-băng → **(3) newdiff** làm nổi *đúng đường-viền vật* (máy giặt + một blob nhỏ); **(4) moving** (ViBe) chỉ bắt nhiễu/chuyển-động lác đác — vật *đứng yên* nên không nằm trong moving; **(5) static_fg = newdiff ∧ ¬moving** lọc còn vật tĩnh; **(6) tight** giữ *toàn-hình* vật để tinh-chỉnh hộp; **(7) semantic** (YOLO-seg) ở vùng vật **tím/thấp** (không phải người) nên **(8) keep** = trắng (giữ). Vật qua mọi cổng → cảnh báo. Đây là *chuỗi nhân-quả* lý tưởng: nền-kép cô lập vật, ngữ-nghĩa xác nhận không-phải-người.
+Đọc theo thứ tự: **(1) frame** hiện tại vs **(2) clean_bg** đóng-băng → **(3) newdiff** làm nổi *đúng đường-viền vật* (máy giặt + một blob nhỏ); **(4) moving** (ViBe) chỉ bắt nhiễu/chuyển-động lác đác — vật *đứng yên* nên không nằm trong moving; **(5) static_fg = newdiff ∧ ¬moving** lọc còn vật tĩnh; **(6) tight** giữ *toàn-hình* vật để tinh-chỉnh hộp; **(7) semantic** (YOLO-seg) ở vùng vật **tím/thấp** (không phải người) nên **(8) keep** = trắng (giữ). Vật qua mọi cổng → cảnh báo. Đây là một **HIT riêng lẻ** trong video8; toàn video8 vẫn có 1 FP lẻ như Bảng 3.
 
 #### 6.6.2. Trường hợp TỐT NHẤT
 
@@ -455,4 +475,4 @@ Chúng tôi xây dựng một hệ thống AOD **thời-gian-thực trên CPU** 
 
 ---
 
-*Báo cáo này mô tả hệ thống ở commit hiện hành của repo. Số liệu thực nghiệm trong `results_bcfix_g0/` và `metrics/aboda_instance_occupancy_1fps.json`. Quy trình phát triển chi tiết (các hướng đã thử & loại) trong [`solution_analysis.md`](solution_analysis.md).*
+*Báo cáo này mô tả hệ thống ở commit hiện hành của repo. Số liệu thực nghiệm trong `results_bcfix_g0/`; audit detector-occupancy trong `metrics/aboda_instance_occupancy_1fps.json`; audit foreground khác-nền trong `metrics/scene_foreground_occupancy_1fps.json`. Quy trình phát triển chi tiết (các hướng đã thử & loại) trong [`solution_analysis.md`](solution_analysis.md).*
