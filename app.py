@@ -27,6 +27,7 @@ import threading
 import time
 
 import cv2
+import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import run_rtsbs_aod as engine
@@ -61,18 +62,30 @@ class ObjectStore:
                 self.objects[o["id"]]["bbox"] = list(o["bbox"])
         for oid, rec in self.objects.items():
             if rec["status"] == "present" and oid not in active_ids:   # left the live list
-                rec["status"] = "rejected" if oid in rejected else "taken"
-                rec["frame_taken"] = idx
-                rec["t_taken_s"] = round(idx / max(1e-6, fps), 2)
-                self._write(rec)
+                if oid in rejected:                                    # user said "not abandoned" -> drop its JSON
+                    rec["status"] = "rejected"
+                    self._delete(rec)
+                else:                                                  # taken away (back to clean_bg) -> keep JSON
+                    rec["status"] = "taken"
+                    rec["frame_taken"] = idx
+                    rec["t_taken_s"] = round(idx / max(1e-6, fps), 2)
+                    self._write(rec)
 
     def snapshot(self) -> list[dict]:
         return [dict(r) for r in self.objects.values()]
 
+    def _path(self, rec: dict) -> str:
+        return os.path.join(self.out_dir, f"object_{rec['id']:03d}.json")
+
     def _write(self, rec: dict) -> None:
-        path = os.path.join(self.out_dir, f"object_{rec['id']:03d}.json")
-        with open(path, "w", encoding="utf-8") as f:
+        with open(self._path(rec), "w", encoding="utf-8") as f:
             json.dump(rec, f, indent=2, ensure_ascii=False)
+
+    def _delete(self, rec: dict) -> None:
+        try:
+            os.remove(self._path(rec))
+        except OSError:
+            pass
 
 
 # --------------------------------------------------------------------------------------------------
@@ -95,26 +108,33 @@ class PipelineRunner:
         self._stop = True
 
     def _on_frame(self, idx, display, active, fps, total):
-        # measured PROCESSING fps (frames the pipeline actually pushes per real second)
+        # measured PROCESSING fps -- start the clock at the FIRST frame so the ~20s warm-up read and
+        # the one-time YOLO/OpenVINO model load are NOT counted (else the FPS reads <1 for a long time).
+        if self._n == 0:
+            self._t0 = time.time()
         self._n += 1
         if self._n % 5 == 0:
             self.proc_fps = self._n / max(1e-6, time.time() - self._t0)
         active_copy = [{"id": o["id"], "bbox": list(o["bbox"]), "center": list(o["center"]),
                         "t_alert": o["t_alert"], "frame_alert": o["frame_alert"]} for o in active]
         self.store.update(idx, active_copy, self.rejected, fps)              # always persist
-        item = (idx, display.copy(), active_copy, self.proc_fps, total, self.store.snapshot())
+        self._push(("detect", idx, display.copy(), active_copy, self.proc_fps, total, self.store.snapshot()))
+
+    def _on_warmup(self, idx, frame):                                       # stream the learning phase
+        self._push(("warmup", idx, frame.copy(), [], 0.0, 0, []))
+
+    def _push(self, item):
         try:
             self.frame_q.put_nowait(item)                                   # display: drop if behind
         except queue.Full:
             try:
-                self.frame_q.get_nowait()
-                self.frame_q.put_nowait(item)
+                self.frame_q.get_nowait(); self.frame_q.put_nowait(item)
             except queue.Empty:
                 pass
 
     def run(self):
         try:
-            engine.main(self.argv, on_frame=self._on_frame,
+            engine.main(self.argv, on_frame=self._on_frame, on_warmup=self._on_warmup,
                         should_stop=lambda: self._stop, rejected_ids=self.rejected)
         except Exception as exc:                                            # surface to the GUI
             self.error = f"{type(exc).__name__}: {exc}"
@@ -148,7 +168,9 @@ def selftest(video: str, warmup: float, out_dir: str, max_frames: int = 0) -> in
     last = 0
     while not runner.done or not q.empty():
         try:
-            idx, _disp, active, pfps, _total, _snap = q.get(timeout=0.5)
+            phase, idx, _disp, active, pfps, _total, _snap = q.get(timeout=0.5)
+            if phase != "detect":
+                continue
             last = idx
             if active and idx % 30 == 0:
                 print(f"  f{idx} ~{pfps:.1f} FPS | active: " +
@@ -280,6 +302,8 @@ def launch_gui():
             self.video.bind("<Configure>",                       # re-fit on resize even between frames
                             lambda e: self._render(self.last_disp) if self.last_disp is not None else None)
             self.last_disp = None
+            self.last_snap = []
+            self._list_sig = None
             self.disp_scale = 1.0
             self.disp_off = (0, 0)
             self._fs = False
@@ -287,15 +311,30 @@ def launch_gui():
             self.root.bind("<Escape>", lambda e: self._toggle_fs(force_off=True))
             self.out_dir = out_dir
             self.root.protocol("WM_DELETE_WINDOW", self._close)
+            self._show_placeholder(["DANG HOC NEN SACH (warm-up)...",
+                                    "Lan dau phai tai model YOLO (~30s).",
+                                    "Video se hien khi hoc nen xong - vui long cho."])
+
+        def _show_placeholder(self, lines):
+            """Dark splash shown while the pipeline reads warm-up frames + loads YOLO (no frames yet)."""
+            img = np.full((560, 980, 3), 28, np.uint8)
+            for i, ln in enumerate(lines):
+                cv2.putText(img, ln, (50, 250 + i * 46), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (185, 185, 185), 2)
+            self.photo = ImageTk.PhotoImage(Image.fromarray(img))
+            self.video.config(image=self.photo)
 
         def _toggle_fs(self, _e=None, force_off=False):
             self._fs = False if force_off else not self._fs
             self.root.attributes("-fullscreen", self._fs)
 
-        def _render(self, disp):
+        def _render(self, disp, overlay=None):
             """Scale the BGR frame to fill the video area (keep aspect, letterbox) and show it."""
             if disp is None:
                 return
+            if overlay:                                          # warm-up banner (ASCII; status bar has VN text)
+                disp = disp.copy()
+                cv2.rectangle(disp, (0, 0), (disp.shape[1], 26), (0, 0, 0), -1)
+                cv2.putText(disp, overlay, (8, 19), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (40, 220, 255), 2)
             h, w = disp.shape[:2]
             aw, ah = self.video.winfo_width(), self.video.winfo_height()
             if aw < 10 or ah < 10:                               # not laid out yet -> sane default
@@ -317,16 +356,22 @@ def launch_gui():
                 except queue.Empty:
                     break
             if item is not None:
-                idx, disp, active, pfps, total, snap = item
-                self.cur_active = active
-                self.last_disp = disp
-                self._render(disp)
-                live = [o for o in snap if o["status"] == "present"]
-                fps_txt = f"{pfps:.1f} FPS" if self.is_video else f"{pfps:.1f} FPS (cam)"
-                tot = f"/{total}" if total else ""
-                self.status.config(text=f"frame {idx}{tot} · {fps_txt} · đang theo dõi {len(live)} vật")
-                self.list_btn.config(text=f"Vật bỏ quên ({len(live)})")
-                self._refresh_list(snap)
+                phase, idx, disp, active, pfps, total, snap = item
+                if phase == "warmup":                                # streaming the clean-bg learning
+                    self.last_disp = disp
+                    self._render(disp, overlay="WARM-UP: dang hoc nen sach...")
+                    self.status.config(text=f"⏳ Đang học nền sạch… (frame {idx}) — chưa phát hiện")
+                else:
+                    self.cur_active = active
+                    self.last_disp = disp
+                    self.last_snap = snap
+                    self._render(disp)
+                    live = [o for o in snap if o["status"] == "present"]
+                    fps_txt = f"{pfps:.1f} FPS" if self.is_video else f"{pfps:.1f} FPS (cam)"
+                    tot = f"/{total}" if total else ""
+                    self.status.config(text=f"frame {idx}{tot} · {fps_txt} · đang theo dõi {len(live)} vật")
+                    self.list_btn.config(text=f"Vật bỏ quên ({len(live)})")
+                    self._refresh_list(snap)
             if self.runner and self.runner.error:
                 messagebox.showerror("Pipeline lỗi", self.runner.error); self.runner.error = None
             if self.runner and self.runner.done and self.frame_q.empty():
@@ -349,28 +394,76 @@ def launch_gui():
                         self.runner.rejected.add(o["id"])
                     return
 
-        # ---- object list pop-up (top-right) ----
+        # ---- object list pop-up ----
         def _toggle_list(self):
-            if self.list_win and self.list_win.winfo_exists():
+            if self.list_win and self.list_win.winfo_exists():     # already open -> close (toggle)
                 self.list_win.destroy(); self.list_win = None; return
-            self.list_win = tk.Toplevel(self.root)
-            self.list_win.title("Danh sách vật bỏ quên")
-            self.list_win.geometry(f"+{self.root.winfo_rootx() + self.root.winfo_width()}+{self.root.winfo_rooty()}")
-            self.tree = ttk.Treeview(self.list_win, columns=("t", "pos"), show="headings", height=12)
-            self.tree.heading("t", text="Báo lúc (s)"); self.tree.heading("pos", text="Vị trí")
-            self.tree.column("t", width=90); self.tree.column("pos", width=110)
-            self.tree.pack(fill="both", expand=True)
-            tk.Label(self.list_win, text="Vật tự rời danh sách khi được lấy đi.", fg="#555").pack(pady=2)
+            win = tk.Toplevel(self.root)
+            self.list_win = win
+            win.title("Vật bỏ quên")
+            win.geometry("370x430")
+            sx, sy = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+            x = min(self.root.winfo_rootx() + self.root.winfo_width() - 380, sx - 380)  # on-screen, near top-right
+            y = min(self.root.winfo_rooty() + 50, sy - 460)
+            win.geometry(f"+{max(0, x)}+{max(0, y)}")
+            win.attributes("-topmost", True)                       # guarantee it's visible (not behind video)
+            tk.Label(win, text="Vật ĐANG bị bỏ quên — chọn để xem chi tiết:", font=("", 10, "bold")).pack(pady=(6, 2))
+            self.tree = ttk.Treeview(win, columns=("id", "t", "pos"), show="headings", height=8)
+            for c, t, w, a in [("id", "#", 40, "center"), ("t", "Báo (s)", 80, "center"), ("pos", "Tâm", 120, "w")]:
+                self.tree.heading(c, text=t); self.tree.column(c, width=w, anchor=a)
+            self.tree.pack(fill="x", padx=6)
+            self.tree.bind("<<TreeviewSelect>>", self._on_list_select)
+            self.detail = tk.Label(win, justify="left", anchor="nw", fg="#222", relief="groove",
+                                   text="(chọn một vật để xem thời gian, bbox…)", wraplength=340, padx=6, pady=6)
+            self.detail.pack(fill="both", expand=True, padx=8, pady=6)
+            tk.Button(win, text="✗  Loại: KHÔNG phải vật bỏ quên (xóa JSON)", fg="#a00",
+                      command=self._reject_selected).pack(pady=(0, 4))
+            tk.Label(win, text="Vật tự rời danh sách khi được lấy đi. Cũng có thể bấm hộp đỏ trên video.",
+                     fg="#777", wraplength=340, font=("", 8)).pack(pady=(0, 6))
+            self._list_sig = None                                  # force a rebuild on next refresh
+
+        def _selected_id(self):
+            sel = self.tree.selection()
+            if not sel:
+                return None
+            v = self.tree.item(sel[0])["values"]
+            return int(v[0]) if v else None
+
+        def _on_list_select(self, _ev=None):
+            o = next((x for x in self.last_snap if x["id"] == self._selected_id()), None)
+            if o is None:
+                return
+            self.detail.config(text=(
+                f"Vật #{o['id']}   ·   trạng thái: {o['status']}\n\n"
+                f"Báo lúc:  frame {o['frame_alert']}  ({o['t_alert_s']} s)\n"
+                f"Tâm:  {tuple(o['center'])}\n"
+                f"Bbox (x1,y1,x2,y2):  {o['bbox']}\n"
+                f"Nguồn:  {o.get('source', '')}\n"
+                f"File:  object_{o['id']:03d}.json"))
+
+        def _reject_selected(self):
+            oid = self._selected_id()
+            if oid is None:
+                messagebox.showinfo("Chưa chọn", "Hãy chọn một vật trong danh sách trước."); return
+            if messagebox.askyesno("Xác nhận", f"Loại vật #{oid} (không phải vật bỏ quên)?\nJSON của nó sẽ bị XÓA."):
+                if self.runner:
+                    self.runner.rejected.add(oid)
+                self.detail.config(text=f"Đã loại vật #{oid} (JSON đã xóa).")
 
         def _refresh_list(self, snap):
             if not (self.list_win and self.list_win.winfo_exists()):
                 return
+            present = [o for o in sorted(snap, key=lambda r: r["id"]) if o["status"] == "present"]
+            sig = tuple(o["id"] for o in present)
+            if sig == self._list_sig:                              # only rebuild when the set changes
+                return
+            keep = self._selected_id()
+            self._list_sig = sig
             self.tree.delete(*self.tree.get_children())
-            for o in sorted(snap, key=lambda r: r["id"]):
-                if o["status"] != "present":
-                    continue
-                self.tree.insert("", "end", text=str(o["id"]),
-                                 values=(o["t_alert_s"], f"{tuple(o['center'])}"))
+            for o in present:
+                iid = self.tree.insert("", "end", values=(o["id"], o["t_alert_s"], f"{tuple(o['center'])}"))
+                if o["id"] == keep:
+                    self.tree.selection_set(iid)
 
         def _close(self):
             if self.runner:

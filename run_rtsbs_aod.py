@@ -595,10 +595,12 @@ def parse_args(argv=None):
     return args
 
 
-def main(argv=None, *, on_frame=None, should_stop=None, rejected_ids=None) -> int:
+def main(argv=None, *, on_frame=None, on_warmup=None, should_stop=None, rejected_ids=None) -> int:
     """Run the pipeline.
 
     Optional interactive hooks (used by the GUI in ``app.py``; ``None`` = headless CLI):
+      * ``on_warmup(idx, frame_bgr)`` — called for each warm-up frame as it is read, so a GUI can
+        STREAM the clean-background-learning phase instead of showing black.
       * ``on_frame(idx, display_bgr, active_objects, fps, total)`` — called every frame with the frame
         (abandoned-object bboxes already drawn) and the live list of still-present abandoned objects.
         Each object is a dict: ``id, bbox[x1,y1,x2,y2], center, t_alert, frame_alert, last_present_frame,
@@ -636,7 +638,8 @@ def main(argv=None, *, on_frame=None, should_stop=None, rejected_ids=None) -> in
         source_label = f"camera:{args.camera_index}"
     else:
         clean_bg, warmup_frames, fps, total = build_warmup_background(
-            args.video, args.bg_learn_seconds, args.sample_step, proc_width=args.proc_width
+            args.video, args.bg_learn_seconds, args.sample_step, proc_width=args.proc_width,
+            on_frame=on_warmup,
         )
         source_label = args.video
     h, w = clean_bg.shape[:2]

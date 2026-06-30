@@ -59,12 +59,15 @@ def build_warmup_background(
     learn_seconds: float,
     sample_step: int = 5,
     proc_width: int = 0,
+    on_frame=None,
 ) -> tuple[np.ndarray, list[np.ndarray], float, int]:
     """Return (clean_bg_gray, warmup_frames_bgr, fps, total_frames).
 
     clean_bg_gray = median of sampled grayscale warm-up frames (float32).
     warmup_frames_bgr is reused to seed ViBE and to build the colour clean background.
     Frames are downscaled to ``proc_width`` (if >0) so the whole pipeline runs at that size.
+    ``on_frame(idx, frame_bgr)`` (optional) is called for each sampled warm-up frame so a GUI can
+    STREAM the learning phase instead of showing a black screen while the median is built.
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -86,6 +89,8 @@ def build_warmup_background(
         frame = resize_to_width(frame, proc_width)
         frames.append(frame.copy())
         grays.append(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+        if on_frame is not None:
+            on_frame(fi, frame)
         fi += max(1, int(sample_step))
     cap.release()
 
