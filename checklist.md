@@ -119,17 +119,7 @@
 
 ---
 
-## 4. ⏳ DOCS + DỌN DẸP (làm khi chốt các fix)
-
-- [ ] Cập nhật `solution_analysis.md`: thêm **P1a dedup-cooldown** + **P1b light-struct** + findings (light-comp usage v6/7/8; video6 corner-light; video9 dedup root; vid0103/v11 FP investigation = không phải crowd-n).
-- [ ] Cập nhật `memory` (demov2-aod-fsm-findings) tương tự.
-- [ ] Cập nhật `README` (mục lighting: thêm light-struct; xác nhận light-norm đã gỡ).
-- [ ] **Dọn temp dirs**: `demov2/diag/`, `demov2/debug/`, `demov2/test_dedup/`, `demov2/test_lstruct/` (artifact test; giữ `results_release/` làm KQ chính).
-- [ ] Cân nhắc hạ `--dedup-cooldown-s` 30→20 (churn quan sát chỉ 7–10s; cửa-sổ-che ngắn hơn) — tùy quyết định.
-
----
-
-## 5. Tồn đọng nhỏ (ghi nhận, chưa ưu tiên)
+## 4. Tồn đọng nhỏ (ghi nhận, chưa ưu tiên)
 
 - **owner-gate báo sớm (video9 alert#1)**: nổ đúng biên `owner_clear`(3s) sau khi người rời → hơi sớm. Nới owner_clear → trễ báo thật. Để nguyên (báo sớm chấp nhận được cho an ninh).
 - **pybgs không-tất-định** ở vài video (v11) → FP dao động ±1 giữa các lần chchạy. dedup-cooldown làm ổn định một phần; muốn tất-định hoàn toàn phải đổi backend `controlled` (numba, chậm hơn).
@@ -137,10 +127,3 @@
 
 ---
 
-## Thứ tự đề xuất tiếp theo
-1. ✅ P1a + P1b xong.
-2. **Chốt B** (`--warmup-motion-mask`): chờ test video7/11/0355 → nếu không-regress thì giữ (quyết default ON hay opt-in).
-3. **P2a** (vid0103 — nhanh, chỉ phân tích).
-4. **Docs + dọn temp** (chốt P1a/P1b/B + findings vào solution_analysis + memory; xóa diag/debug/test_*).
-5. Hỏi bạn chọn: **A** (regional-shift, floor-FP video6/7) hay **P2c** (clean-bg-image) — đều cần test kỹ recall.
-6. ❌ Mục §0 (mở-cửa runtime / perception) — cần ROI/model, để sau.
