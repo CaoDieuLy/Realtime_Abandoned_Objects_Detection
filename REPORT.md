@@ -371,11 +371,11 @@ Các hình dưới dùng hai nguồn: ảnh cảnh-báo chuẩn từ `results_bc
 
 #### 6.6.1. Luồng mask của một phát hiện ĐÚNG (walkthrough)
 
-**Hình 7 — Tám mask của một phát hiện sạch (video8, máy giặt bỏ lại).**
+**Hình 7 — Tám mask của một phát hiện sạch (video8, túi đàn bỏ lại).**
 
 ![pipeline masks](report_figures/fig_pipeline_masks.png)
 
-Đọc theo thứ tự: **(1) frame** hiện tại vs **(2) clean_bg** đóng-băng → **(3) newdiff** làm nổi *đúng đường-viền vật* (máy giặt + một blob nhỏ); **(4) moving** (ViBe) chỉ bắt nhiễu/chuyển-động lác đác — vật *đứng yên* nên không nằm trong moving; **(5) static_fg = newdiff ∧ ¬moving** lọc còn vật tĩnh; **(6) tight** giữ *toàn-hình* vật để tinh-chỉnh hộp; **(7) semantic** (YOLO-seg) ở vùng vật **tím/thấp** (không phải người) nên **(8) keep** = trắng (giữ). Vật qua mọi cổng → cảnh báo. Đây là một **HIT riêng lẻ** trong video8; toàn video8 vẫn có 1 FP lẻ như Bảng 3.
+Đọc theo thứ tự: **(1) frame** hiện tại vs **(2) clean_bg** đóng-băng → **(3) newdiff** làm nổi *đúng đường-viền vật* (túi đàn + một blob nhỏ); **(4) moving** (ViBe) chỉ bắt nhiễu/chuyển-động lác đác — vật *đứng yên* nên không nằm trong moving; **(5) static_fg = newdiff ∧ ¬moving** lọc còn vật tĩnh; **(6) tight** giữ *toàn-hình* vật để tinh-chỉnh hộp; **(7) semantic** (YOLO-seg) ở vùng vật **tím/thấp** (không phải người) nên **(8) keep** = trắng (giữ). Vật qua mọi cổng → cảnh báo. Đây là một **HIT riêng lẻ** trong video8; toàn video8 vẫn có 1 FP lẻ như Bảng 3.
 
 #### 6.6.2. Trường hợp TỐT NHẤT
 
