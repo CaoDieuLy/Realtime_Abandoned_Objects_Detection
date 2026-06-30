@@ -33,3 +33,6 @@ test_*/
 diag/
 debug/
 results_bcfix_*/_t.log
+
+# GUI session outputs
+aod_sessions/

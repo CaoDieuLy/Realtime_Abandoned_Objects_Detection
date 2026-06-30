@@ -2,8 +2,15 @@
 
 Phân tích chi tiết giải pháp + **quá trình phát triển** (vì sao chọn từng cơ chế, các hướng đã thử & loại, kết quả đo). README là phần giới thiệu/hướng dẫn chạy; file này là hồ sơ kỹ thuật + kết quả.
 
-> **Kiến trúc**: orchestrator (`run_rtsbs_aod.py`) + 7 module `core/` + tool scripts.
+> **Kiến trúc**: orchestrator (`run_rtsbs_aod.py`) + 7 module `core/` + tool scripts + GUI desktop (`app.py`).
 > **Dataset benchmark**: ABODA (13 video, gồm 2 video camera thật độ-phân-giải-cao). Cấu hình mặc định = cấu hình tốt nhất đã chốt.
+
+### TRẠNG THÁI HIỆN TẠI (chốt 2026-06)
+- **Default**: `no-feedback` (pybgs ViBe C++) + YOLO-seg `yolo26s` OpenVINO + **B** warmup-motion-mask ON + **C** evidence-gate ON + light-struct ON + dedup-cooldown ON + relight/heal-revealed ON + `--gather-px 0`.
+- **Kết quả full-sweep 13 video** (lần đầu đủ 11 GT, gồm video4/5): **Recall 12/12 · FP 18** (§3.11). 2 video ngoài-GT: vid0355 (1 máy giặt báo-lặp-2-vị-trí), vid0103 (1 FP warmup-nhiễm).
+- **Tốc độ**: ~5 FPS (batch, CPU laptop Tiger Lake) / ~7–9 FPS single-run (§3.10). Nghẽn ở YOLO-seg.
+- **3 mục bàn giao quan trọng**: **§3.13** tỷ-lệ-foreground/khung-hình · **§3.14** các-chế-độ-cập-nhật-sáng/nền · **§3.15** tham-số-trade-off-recall/precision.
+- **Sản phẩm**: `app.py` (GUI desktop: chọn video/cam, bbox live, danh sách vật bỏ quên, click confirm/reject, JSON/vật).
 
 ---
 
@@ -39,7 +46,7 @@ graph TD
 **3 mode preset**:
 | Mode | BGS | Feedback | Motion gate | Semantic |
 |------|-----|----------|-------------|----------|
-| `no-feedback` | pybgs C++ | ❌ | raw-vibe | YOLO-seg (chỉ trừ người) |
+| `no-feedback` | pybgs C++ | ❌ | raw-vibe | YOLO-seg loại **animate (người/xe/động vật)**, không chỉ người |
 | `instance-feedback` | ControlledViBE | ✅ 1 chiều (FG-protect) | raw-vibe | YOLO-seg |
 | `dense-feedback` | ControlledViBE | ✅ 2 chiều (BG+FG) | rtsbs | SegFormer dense |
 
@@ -378,6 +385,70 @@ Chạy toàn bộ 13 video **chỉ bằng default** (no-feedback · OpenVINO `yo
 - **❌ scene-state-change RUNTIME (MỞ CỬA, ghế xê dịch...)**: **giới hạn CỐ HỮU** — static + khác clean_bg + không-người → báo nhầm; pipeline không phân biệt "cảnh đổi" vs "vật để lại". Không lớp nào cứu. → cần stuff-reject(dense)/ROI-mask/chấp nhận.
 - **f5148 (đèn-tắt-cục-bộ)** thuộc họ scene-state-change (blob có support thật, std-diff 55) → C/A đều không trị.
 
+---
+
+## 3.13. Tỷ lệ foreground (motion-object) trên khung hình — instance-occupancy
+
+**Là thước đo DIỆN TÍCH** (phần trăm pixel khung hình bị mask đối tượng chiếm), **KHÔNG phải đếm số người**. Tách rời số-lượng: vài người/xe **to & gần cam** có thể lấp **nhiều %** hơn rất nhiều người ở xa.
+
+- **Cách đo**: `tools/measure_instance_occupancy.py` chạy YOLO-seg (`yolo26n`, imgsz 640, conf 0.15), lấy mẫu **1 frame/giây**, union mask theo nhóm class. Báo thô: [`metrics/aboda_instance_occupancy_1fps.json`](metrics/aboda_instance_occupancy_1fps.json). Định nghĩa: `animate-FG = union(người/xe/động-vật)`, `object-FG = union(balo/ô/túi/vali/chai)`, `coverage = area(mask)/area(frame)`.
+- **Bảng đầy đủ 13 video** ở [README §"Mức chiếm dụng foreground"](README.md). Điểm mấu chốt (đúng yêu cầu "đo cả vid ít người lấp nhiều % cam"):
+
+| Cảnh | Số instance (TB/max) | Animate mask %(TB/max) | Đọc |
+|---|---|---|---|
+| **vid0355** (1 xe gần cam) | 2,4 / 5 | **6,33 / 11,33%** | **ÍT vật nhưng % CAO** (xe to, gần) |
+| **video11** (đám đông >40) | 10,5 / 15 | 3,31 / 5,36% | NHIỀU người nhưng % thấp hơn (ở xa, model còn sót/ghép) |
+| video6 (lobby) | 0,2 / 5 | 0,62 / 19,43% | thường vắng, lúc đông người max ~19% |
+
+→ **% diện tích ≠ số lượng**: vid0355 (≈1 xe) chiếm **6,33%** > video11 (≈40 người) **3,31%**. Vì vậy báo cáo **CẢ HAI**: `coverage %` (mức lấp khung hình thực) **và** detected count. owner-gate dùng *count* (`--crowd-n`) để quyết bật/tắt; *coverage* để mô tả/audit cảnh. (Lưu ý: số đo bằng `yolo26n` 1fps; pipeline mặc định chạy `yolo26s` — count thực-thi cao hơn chút.)
+
+## 3.14. Các chế độ cập nhật SÁNG & cập nhật NỀN (đầy đủ)
+
+Pipeline có **4 lớp** đụng tới nền/ánh sáng — biết rõ để chỉnh đúng:
+
+| # | Cơ chế (cờ) | Khi nào | Làm gì | Trị FP nào | Giới hạn |
+|---|---|---|---|---|---|
+| **1. Dựng nền** | warmup median (`--bg-learn-seconds`) | đầu video | clean_bg = **median FROZEN** của warmup → vật mới luôn khác nền, không bị nuốt | nền tham chiếu | phải kết thúc TRƯỚC khi vật xuất hiện |
+| | motion-mask **B** (`--warmup-motion-mask` 1, default) | đầu video | median **loại pixel-motion** (người/cửa đi qua không nướng vào nền) | video6 f780 (warmup-ghost ĐỘNG) | không trị người **bất-động**-suốt-warmup (vid0103) |
+| **2. Bảo trì nền (runtime)** | slow-update (`--clean-update-lr`) | mỗi frame | EMA chậm ở pixel **KHÔNG-static** → hấp thụ trôi-nền dần; **persist-protect** chặn nuốt vật tĩnh | drift nền chậm | nếu motion-gate nháy → có thể rỉ update lên vật |
+| | **relight** (`--relight-dv/ds/relight-stable-dv`) | đổi sáng LỚN | **REBUILD toàn bộ** clean_bg ở **plateau ổn định** (ngày↔đêm) | v7 đổi-sáng-từ-từ 21→2 FP | chỉ global; nuốt vật chưa-alert nếu rebuild lúc vật có mặt |
+| | **light-comp** (`--heal-cov`, `--heal-alpha`) | diff phủ RỘNG (>15%) | re-baseline nền nơi đổi-sáng-toàn-cục; alpha sáng=1.0 / tối=0.05 | đổi-sáng phủ rộng | hấp-thụ → đẻ "ma" (xem C) |
+| **3. Khử artifact-sáng tại alert** | **light-struct** (`--light-struct`, `-ncc` 0.85) | lúc alert | patch nền-VÂN chỉ-đổi-sáng (NCC≥0.85) → **bỏ alert** | video6 góc cầu thang | nền phẳng / mở-cửa (đổi cấu trúc) không bắt |
+| | **C evidence-gate** (`--alert-min-support` 0.05) | lúc alert | đòi bbox còn **≥5% newdiff** hiện tại; ~0 = "ma" (light-comp đã hấp thụ) → **DEFER** | video6 sàn/cột f5157/f5171 | — (an toàn, 0 miss) |
+| **4. Xử agent-ghost** | **heal-revealed** (`--heal-revealed` 1) | sau warmup | YOLO trên clean_bg tìm xe/người **baked** → heal khi chúng RỜI ĐI | car-ghost vid0355/vid0103 | YOLO mù bóng/người-cúi-tối |
+
+**Tương tác quan trọng**: light-comp **hấp thụ** đổi-sáng → newdiff về 0, NHƯNG static-FG còn giữ trễ → đẻ "ma" → **C** dọn. heal-revealed detect trên **plain median** (không phải bản B) để B không co vùng heal (fix vid0355). **Giới hạn cố hữu** (xem §4): mở-cửa/scene-state-change runtime + warmup-nhiễm (người bất-động suốt warmup) — không lớp nào trị.
+
+## 3.15. Tham số điều chỉnh trade-off Recall ↔ Precision
+
+Stance an ninh: **bỏ-sót-vật (false-negative) TỆ hơn báo-nhầm (false-positive)** → default lệch về recall; nhóm **D nguy hiểm** (suppress, có thể nuốt vật).
+
+| Nhóm | Cờ (default) | → tăng RECALL (TP↑,FP↑) | → tăng PRECISION (FP↓, miss↑) | Rủi ro |
+|---|---|---|---|---|
+| **A. Độ nhạy** | `--th-diff` (40) | giảm (bắt vật mờ) | tăng (bỏ nhiễu/bóng) | — |
+| | `--area-min`/`--area-max` (60 / 30000) | area-min↓ / area-max↑ | area-min↑ (bỏ blob nhỏ) / area-max↓ (bỏ cửa) | — |
+| | `--ts-static` (5.0s) | giảm (báo sớm) | tăng (chỉ vật bỏ lâu) | + latency |
+| | `--proc-width`/`--sem-proc-width` (640/960) | **tăng** (vật nhỏ rõ) | — | chậm hơn |
+| **B. Perception** | `--tau-animate` (0.3) | tăng (ít nhầm vật=người) | giảm (loại người mạnh→crowd-FP↓) | ⚠ giảm → **loại vật cạnh người** |
+| | `--person-overlap-max` (0=off) | giữ 0 | bật ~0.5 (bỏ blob trên người) | ⚠ miss vật cầm/gần người |
+| | YOLO model (`--yolo-weights` yolo26s) | model to = **cả hai tốt** | | |
+| **C. Owner-gate** | `--owner-clear-s` 3 / `--owner-timeout-s` 30 / `--crowd-n` 10 | — | clear-s↑ (FP người-đứng-cạnh↓) | + trễ (timeout chặn vô-hạn) |
+| **D. ⚠ Suppress sáng/cảnh (NGUY HIỂM: nuốt vật)** | `--light-struct-ncc` (0.85) | tăng (ít suppress) | giảm (bỏ lighting nhiều) | **bỏ vật trên nền vân** |
+| | `--relight-dv` (20) / `--heal-cov` (0.15) | tăng (ít rebuild/absorb) | giảm (relight/absorb mạnh) | **nuốt vật khi đổi sáng** |
+| | `--alert-min-support` (C, 0.05) | giảm | tăng (bỏ ma nhiều hơn) | an toàn ở mức thấp |
+| **E. Ghost** | `--heal-revealed` (1) | **0 = an ninh tối đa** (không suppress) | 1 = bỏ car/person-ghost | heal-zone có thể nén vật vùng agent |
+| | `--warmup-motion-mask` (B, 1) | — (chỉ thêm-FP, không nuốt) | — | nhiễu clean_bg → FP nơi khác (opt: 0) |
+| **F. Dedup** | `--dedup-dist` 40 / `--dedup-cooldown-s` 30 | dist↓ (tách vật gần nhau) | dist↑ (bớt báo-lặp) | ⚠ dist to → **gộp 2 vật sát thành 1** (miss vật-2) |
+
+**Hai recipe đối cực** (cam thật nên A/B test):
+| | Max-RECALL (an ninh) | Max-PRECISION (ít báo) |
+|---|---|---|
+| th-diff / area-min / ts-static | 30 / 30 / 3s | 55 / 100 / 9s |
+| tau-animate / nhóm D | 0.45 / nới-tắt | 0.2 / siết |
+| heal-revealed | 0 | 1 |
+
+**Đòn bẩy lớn nhất**: FP đám đông (video11) = trần perception → model to/open-vocab + `--tau-animate`. Miss vật nhỏ = `--proc-width`↑ (đòn bẩy recall sạch nhất, không nuốt vật).
+
 ## 4. Các vấn đề chính (tổng hợp)
 
 ### 🔴 Nghiêm trọng
@@ -422,7 +493,7 @@ Chạy toàn bộ 13 video **chỉ bằng default** (no-feedback · OpenVINO `yo
 ### Điểm yếu
 1. **Feedback RT-SBS KHÔNG giúp AOD**: instance-feedback miss video1, FP không giảm. Dense-feedback cần GPU (SegFormer ~2 FPS). **Kết luận: RT-SBS feedback là overhead không mang lại giá trị cho bài toán abandoned object.**
 2. **Orchestrator quá phức tạp**: 900 dòng, 70+ params, logic alert lồng sâu → khó test, khó extend.
-3. **YOLO-nano bottleneck ở cảnh đông**: Bỏ sót 25/33 người → FP cứng, không trị bằng logic.
+3. **Trần perception ở cảnh đông** (default đã nâng nano→`yolo26s`): vẫn sót/ghép người ở xa (video11: model thấy ~10/40) → FP đám đông cứng, không trị bằng logic → cần model to/open-vocab.
 4. **Thiếu unit test**: Không có test nào trong repo cho demov2.
 5. **Config coupling**: Nhiều tham số tương tác ngầm (vd `tau_animate` × `dilate_animate` × `person_hull` × `person_overlap_max`).
 

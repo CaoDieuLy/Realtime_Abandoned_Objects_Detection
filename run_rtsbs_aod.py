@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import signal
+import threading
 import sys
 import time
 
@@ -334,7 +335,7 @@ class PybgsViBe:
         return  # pybgs updates internally during apply()
 
 
-def parse_args():
+def parse_args(argv=None):
     ap = argparse.ArgumentParser(
         description="demov2 abandoned-object detection — clean-background FSM + semantic keep-gate. "
                     "Most runs only need the 'common' options below; everything in 'advanced' has a tuned "
@@ -522,8 +523,14 @@ def parse_args():
                           help="avg >= this many person/vehicle blobs -> 'crowded' -> disable owner-gate "
                                "(in a dense crowd a per-object owner check is unreliable). Raised 6->10 since "
                                "yolo26s-seg detects more people than nano, so the blob count runs higher.")
-    advanced.add_argument("--gather-px", type=int, default=5, help="CLOSE tight_mask this many px to merge fragments when refining the alert bbox; 0=off. "
-                    "Default 5 = light join (covers a fragmented object) without over-merging a crowd into one giant box (v11).")
+    advanced.add_argument("--gather-px", type=int, default=0, help="CLOSE tight_mask this many px to merge fragments when refining the alert bbox; 0=off (default). "
+                    ">0 joins a fragmented object into a fuller box but can over-merge a crowd into one giant box (v11).")
+    # interactive / GUI: when is an alerted object considered TAKEN AWAY (removed from the active list)
+    advanced.add_argument("--taken-clear-s", type=float, default=3.0,
+                          help="an alerted object is declared TAKEN (removed from the live list) after its location "
+                               "has had no foreground support for this many seconds (it went back to clean_bg).")
+    advanced.add_argument("--taken-min-support", type=float, default=0.02,
+                          help="min fraction of the object bbox still differing from clean_bg to count it as STILL present.")
 
     # Prop3 / Prop2 / Prop1
     advanced.add_argument("--motion-to-static", action="store_true",
@@ -553,7 +560,7 @@ def parse_args():
     advanced.add_argument("--fill-min", type=float, default=0.18)
 
     common.add_argument("--save-masks-every", type=int, default=0)
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     if not args.video and args.camera_index < 0:
         ap.error("provide a source: --video <path-to-video> or --camera-index <n>")
@@ -588,8 +595,19 @@ def parse_args():
     return args
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv=None, *, on_frame=None, should_stop=None, rejected_ids=None) -> int:
+    """Run the pipeline.
+
+    Optional interactive hooks (used by the GUI in ``app.py``; ``None`` = headless CLI):
+      * ``on_frame(idx, display_bgr, active_objects, fps, total)`` — called every frame with the frame
+        (abandoned-object bboxes already drawn) and the live list of still-present abandoned objects.
+        Each object is a dict: ``id, bbox[x1,y1,x2,y2], center, t_alert, frame_alert, last_present_frame,
+        taken, taken_frame``.
+      * ``should_stop()`` -> bool — stop the loop early (e.g. GUI window closed).
+      * ``rejected_ids`` — a shared ``set`` of object ids the user marked "not abandoned"; they are
+        dropped from the live list / not drawn.
+    """
+    args = parse_args(argv)
     if args.semantic_mode == "dense" and not args.semantic_dir:
         raise SystemExit(
             "[demo2] --semantic-mode dense follows original RT-SBS and requires "
@@ -850,6 +868,14 @@ def main() -> int:
     gather_k = (cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (args.gather_px, args.gather_px))
                 if args.gather_px > 0 else None)
 
+    # interactive abandoned-object registry (for the GUI live list + per-object JSON). Location-keyed
+    # because cand_id churns; an object stays "present" while its bbox still differs from clean_bg, and
+    # is declared TAKEN once that support is gone for taken_clear_s (it was picked up -> back to clean_bg).
+    interactive = on_frame is not None
+    abandoned_objects: list[dict] = []
+    next_obj_id = 1
+    taken_gone_frames = max(1, int(args.taken_clear_s * fps))
+
     print(
         f"[demo2] mode={args.mode} | bgs-backend={args.bgs_backend} | "
         f"semantic-feedback={'ON' if feedback_on else 'OFF'} | motion-gate={args.aod_motion_source} | "
@@ -865,11 +891,15 @@ def main() -> int:
         stop_requested = True
         print("\n[demo2] stop requested; finishing current frame...", flush=True)
 
-    previous_sigint = signal.getsignal(signal.SIGINT)
-    signal.signal(signal.SIGINT, _request_stop)
+    # SIGINT (Ctrl-C) handling only works in the main thread; when driven from a GUI/worker thread
+    # (interactive hooks) skip it and rely on should_stop() instead.
+    use_signal = threading.current_thread() is threading.main_thread()
+    previous_sigint = signal.getsignal(signal.SIGINT) if use_signal else None
+    if use_signal:
+        signal.signal(signal.SIGINT, _request_stop)
     i = 0
     while True:
-        if stop_requested:
+        if stop_requested or (should_stop is not None and should_stop()):
             break
         ok, frame_full = cap.read()
         if not ok:
@@ -1145,6 +1175,41 @@ def main() -> int:
                     os.path.join(args.outdir, f"alert_f{i}_c{rcx}_{rcy}.jpg"),
                     alert,
                 )
+                if interactive:                          # register a live abandoned object (location-keyed)
+                    same = next((o for o in abandoned_objects if not o["taken"]
+                                 and abs(o["center"][0] - rcx) < args.dedup_dist
+                                 and abs(o["center"][1] - rcy) < args.dedup_dist), None)
+                    if same is None:
+                        abandoned_objects.append({
+                            "id": next_obj_id, "bbox": list(b), "center": [rcx, rcy],
+                            "t_alert": round(t_now, 2), "frame_alert": i,
+                            "last_present_frame": i, "taken": False, "taken_frame": None, "taken_t": None,
+                        })
+                        next_obj_id += 1
+                    else:                                # refresh bbox of an already-listed object
+                        same["bbox"] = list(b); same["last_present_frame"] = i
+
+        # --- interactive: presence/taken update + draw live bboxes + frame callback ---
+        if interactive:
+            for o in abandoned_objects:
+                if o["taken"] or (rejected_ids is not None and o["id"] in rejected_ids):
+                    continue
+                x1, y1, x2, y2 = o["bbox"]
+                sub = newdiff[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
+                support = float((sub > 0).mean()) if sub.size else 0.0
+                if support >= args.taken_min_support:
+                    o["last_present_frame"] = i
+                elif (i - o["last_present_frame"]) > taken_gone_frames:   # picked up -> back to clean_bg
+                    o["taken"] = True; o["taken_frame"] = i; o["taken_t"] = round(t_now, 2)
+            active = [o for o in abandoned_objects if not o["taken"]
+                      and not (rejected_ids is not None and o["id"] in rejected_ids)]
+            display = frame.copy()
+            for o in active:
+                x1, y1, x2, y2 = o["bbox"]
+                cv2.rectangle(display, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                cv2.putText(display, f"#{o['id']}", (x1, max(13, y1 - 5)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
+            on_frame(i, display, active, fps, total)
 
         if args.save_masks_every and i % args.save_masks_every == 0:
             cv2.imwrite(os.path.join(args.outdir, f"raw_vibe_f{i}.jpg"), raw_vibe)
@@ -1207,7 +1272,8 @@ def main() -> int:
             f"  f{ev['frame']} t={ev['t_s']}s center={ev['center']} "
             f"wh={ev['wh']} present={ev['present_s']}s"
         )
-    signal.signal(signal.SIGINT, previous_sigint)
+    if use_signal:
+        signal.signal(signal.SIGINT, previous_sigint)
     return 0
 
 
