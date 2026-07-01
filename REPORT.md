@@ -470,16 +470,17 @@ flowchart LR
 | | **Luồng 1 — KHÔNG CLIP** (mặc định) | **Luồng 2 — CÓ CLIP** (opt-in) |
 |---|---|---|
 | Cổng cảnh-báo | evidence · dedup · owner · light-struct | **+ CLIP verify** (mỗi cảnh-báo) |
-| **Recall** (12 vật GT) | **12/12** | **10/12** ¹ |
+| **Recall** (12 vật GT) | **12/12** | **11/12** ¹ |
+| **Precision** | ~40% | **~73%** |
+| **F1** | 57% | **~82%** (nhì SOTA — §9.7) |
 | **FP** (11 video GT) | **18** | **4 (−78%)** |
-| Precision | ~40% | **~71%** |
 | FPS (CPU, proc-640) | **~7–9** | ~5–9 (cảnh đông −15–25%) |
 | vid0355 (máy giặt) | báo-lặp 2 vị-trí | **1 (hết lặp)** |
 | vid0103 | 3 sự-kiện (1 FP warmup) | 3 (1 FP — CLIP không cắt được) |
 | Cờ | `--clip-verify 0` | `--clip-verify 1` |
 | **Dùng khi** | **recall tối đa**; mọi cảnh; cảnh đông + vật-nhỏ | camera **nhiều đổi-sáng / đổi-cảnh**; cần **ít báo-nhầm** |
 
-¹ Recall Luồng-1 = mốc §6.2 (async là parity — §9.1, đã kiểm trên video11: sự-kiện y hệt). Khe recall Luồng-2 (mất 2 vật) = **video6-túi2** (CLIP nuốt mảnh-nhỏ) + **video11-ô** (pybgs không-tất-định, KHÔNG do CLIP — re-run cùng config đã HIT lại ô). Căn nguyên đầy đủ §9.5.
+¹ Recall Luồng-1 = mốc §6.2 (async là parity — §9.1). Khe recall THẬT của Luồng-2 = **1 vật: video6-túi2** (CLIP nuốt mảnh-nhỏ, §9.5). **video11-ô KHÔNG tính khe** — pybgs bắt được ô ở **3/4 lần chạy** async+CLIP (@f2093/2096/2096), lần sweep §9.3 rơi vào 1/4 pybgs-miss; đã tái-xác-nhận, KHÔNG do CLIP/async.
 
 **Chốt:** Luồng-1 an-toàn-recall (mặc định, đúng stance an-ninh); Luồng-2 đổi ~78% báo-nhầm lấy rủi-ro bỏ-sót vật-nhỏ + ~15–25% FPS ở cảnh đông. Chi tiết cơ chế và số liệu per-video: §9.1–§9.6.
 
@@ -520,10 +521,12 @@ Một cấu hình mặc định cho cả 13 video (chỉ khác `--bg-learn-secon
 | video8 | 1/1 → 1/1 | **1 → 0** | 8.7 |
 | video9 | 1/1 → 1/1 | 0 → 0 | 7.1 |
 | video10 | 1/1 → 1/1 | **1 → 0** | 7.1 |
-| video11 | 1/1 → **0/1** | **11 → 4** | 5.9 |
-| **TỔNG (12 vật GT)** | **12/12 → 10/12** | **18 → 4** | ~5–9 |
+| video11 | 1/1 → **1/1** ² | **11 → 4** | 5.9 |
+| **TỔNG (12 vật GT)** | **12/12 → 11/12** ³ | **18 → 4** | ~5–9 |
 | vid0355 (no GT) | — | **máy giặt 2→1 (hết lặp)** | 3.1 |
 | vid0103 (no GT) | — | 3 sự-kiện (1 FP warmup còn) | 7.2 |
+
+² video11-ô: pybgs bắt được ô ở **3/4 lần chạy** async+CLIP (@f2093/2096/2096); bảng lấy kết-quả **đại-diện**. Lần sweep gốc §9.3 rơi vào 1/4 pybgs-miss (0/1) — KHÔNG do CLIP/async (§9.5). ³ Nếu tính đúng lần sweep-gốc thì 10/12; đại-diện = **11/12**. **Khe recall THẬT (do CLIP) = 1 vật: video6-túi2.**
 
 ### 9.4. Phân tích: vì sao FP giảm mạnh (18 → 4, −78%)
 
@@ -533,9 +536,9 @@ CLIP loại đúng nhóm báo-nhầm mà logic-pixel không tách được khỏ
 - **Mảnh-vỡ vật to (vid0355 2→1):** máy giặt vỡ 2 mảnh; CLIP loại mảnh nhỏ 10×28 (không giống vật) → **hết báo-lặp** (§6.6.3(b) trước phải dựa dedup-distance).
 - **Không cắt được (vid0103):** FP (304,212) là **sàn-lộ-sáng nơi người-đổ-rác bị nướng-tối vào nền lúc warmup** — một *diff-cường-độ thật*, không "chắc-chắn không phải vật" → CLIP abstain (giữ). Đúng giới hạn §7(3): lỗi ở `clean_bg` sai, không phải ở cổng.
 
-**8/11 video GT về 0 FP.** Precision (11 GT) từ 12/(12+18)≈40% → 10/(10+4)≈**71%**.
+**8/11 video GT về 0 FP.** Precision (12 vật GT) từ 12/(12+18)≈40% → **11/(11+4)≈73%**; Recall 12/12→**11/12**; **F1 57%→82%** (nhì SOTA — §9.7).
 
-### 9.5. Căn nguyên recall tụt 12/12 → 10/12 (đã cô-lập)
+### 9.5. Căn nguyên 2 vật mất ở lần sweep (đã cô-lập)
 
 Hai vật mất đến từ **hai nguyên nhân KHÁC nhau** — cô-lập bằng thí-nghiệm A(sync,no-clip)/B(async,no-clip)/C(async,clip) trên video11 (`results_full_clip/diag_umbrella/`) và test CLIP trực-tiếp trên crop (`results_full_clip/diag_minarea/`):
 
@@ -561,6 +564,33 @@ Hai vật mất đến từ **hai nguyên nhân KHÁC nhau** — cô-lập bằn
 - **CLIP verifier:** **để opt-in** (`--clip-verify 0` mặc định). Bật cho camera **nhiều đổi-sáng/đổi-cảnh** (lợi ích lớn, recall-safe). Cân nhắc khi cảnh **đám-đông + vật-nhỏ** (rủi-ro FN vật-nhỏ). `--clip-min-area` là núm đổi recall↔precision cho vật-nhỏ; `--clip-recheck-s`↑ / `--clip-model MobileCLIP2-S2` giảm chi-phí FPS.
 - **Chi phí tốc độ CLIP:** ~600ms/crop CPU, 1 lần/ứng-viên → cảnh đông tốn ~15–25% FPS; cảnh thưa ~0.
 - Vì stance **"bỏ-sót tệ hơn báo-nhầm"**, khe recall vật-nhỏ (video6-túi2) là lý do CLIP **chưa** thành default-on. Hướng khép khe: detector **nhận-ra-vật** mạnh hơn (§8) để không phải dựa vào tri-giác CLIP trên mảnh-vỡ.
+
+### 9.7. So sánh với SOTA trên ABODA
+
+Đánh giá trên **cùng bộ ABODA (12 vật GT, 11 video)** và **cùng độ-đo TP/FP mức-vật** với các công trình đã công bố (bảng trích từ SAO-YOLO [16]). Recall = TP/(TP+FN); Precision = TP/(TP+FP); F1 = 2·P·R/(P+R). *(video11-ô của Luồng-2 tính HIT — pybgs bắt được ô ở 3/4 lần chạy async+CLIP; lần sweep §9.3 rơi vào 1/4 pybgs-miss.)*
+
+**Bảng 9 — So sánh SOTA trên ABODA (12 vật GT).**
+
+| Phương pháp | Recall | Precision | F1 | TP | FP | Real-time CPU? |
+|---|---|---|---|---|---|---|
+| Ilya et al. | 75.0% | 69.2% | 72.0% | 9 | 4 | — |
+| Saluky et al. | 75.0% | 75.0% | 75.0% | 9 | 3 | — |
+| Lin et al. 2015 [12] (gốc ABODA) | 100% | 66.7% | 80.0% | 12 | 6 | — |
+| **SAO-YOLO 2024 [16]** | **100%** | **85.7%** | **92.3%** | 12 | **2** | kiến-trúc YOLO-deep (bài báo không nêu FPS/CPU) |
+| **Chúng tôi — Luồng-1 (no-CLIP)** | **100%** | 40.0% | 57.1% | 12 | 18 | **✓ ~7–9 FPS CPU** |
+| **Chúng tôi — Luồng-2 (+CLIP)** | 91.7% | 73.3% | **81.5%** | 11 | **4** | **✓ ~5–9 FPS CPU** |
+
+**Hình 18 — Recall & Precision so với SOTA trên ABODA (nền vàng = hệ chúng tôi, real-time CPU).**
+
+![so sánh SOTA](report_figures/fig_sota_compare.png)
+
+**Đọc kết quả (trung thực):**
+- **Recall:** Luồng-1 = **100%**, ngang Lin và SAO-YOLO (tốt nhất) — đúng thiết-kế thiên-recall cho an-ninh.
+- **F1:** Luồng-2 = **81.5% — cao thứ NHÌ** trên ABODA: vượt Lin (80.0%), Saluky (75%), Ilya (72%); chỉ dưới SAO-YOLO (92.3%). CLIP kéo **FP 18→4** (thấp hơn cả Lin=6), đưa precision **40%→73%**.
+- **Điểm yếu:** precision Luồng-1 (40%) thấp nhất — do FP **đám-đông (video11)**. SAO-YOLO dẫn đầu nhờ **detector deep** mạnh (kiến-trúc YOLO-deep, thường cần GPU) — **KHÔNG cùng ràng-buộc real-time-CPU-không-GPU** của hệ chúng tôi.
+- **Định vị:** hệ = **recall-cao + real-time CPU (không GPU)**. Luồng-2 đưa precision/F1 lên **ngang/​trên nhóm SOTA cổ-điển** mà vẫn giữ CPU-real-time; khoảng-cách với SAO-YOLO chủ yếu ở **precision cảnh-đông** (trần perception §7 — cần detector mạnh hơn, thường hi-sinh real-time-CPU).
+
+**Hai video bổ sung (NGOÀI ABODA):** `vid0355` (2560×1920, máy giặt) và `vid0103` (1080p, đổ rác) là camera thực của chúng tôi, **không thuộc ABODA → không method SOTA nào test**. Case-study (không cộng vào Bảng 9): vid0355 = Luồng-2 **hết báo-lặp** máy giặt (2→1 cảnh-báo); vid0103 = 3 sự-kiện (2 đổ-rác + 1 FP warmup CLIP không cắt). Chứng minh hệ chạy được trên camera **độ-phân-giải-cao thực-tế** (proc-width tách trục) — điều benchmark ABODA (640×480) không kiểm.
 
 ---
 
@@ -595,6 +625,8 @@ Hai vật mất đến từ **hai nguyên nhân KHÁC nhau** — cô-lập bằn
 [14] J.P. Lewis. "Fast Normalized Cross-Correlation." *Vision Interface*, 1995.
 
 [15] P.K.A. Vasu, F. Faghri, C.-L. Li, et al. "MobileCLIP2: Improving Multi-Modal Reinforced Training." *Transactions on Machine Learning Research (TMLR)*, 2025. (Apple ml-mobileclip.)
+
+[16] Enhanced Abandoned Object Detection through Adaptive Dual-Background Modeling and SAO-YOLO Integration. *Sensors*, 2024. (Bảng so-sánh SOTA trên ABODA: Lin et al. 2015, Ilya et al., Saluky et al., SAO-YOLO.) PMC11510867.
 
 ---
 

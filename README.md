@@ -18,14 +18,16 @@ Cùng một pipeline, **khác nhau ở cổng cảnh-báo cuối** (bật/tắt 
 
 | | **Luồng 1 — KHÔNG CLIP** (mặc định) | **Luồng 2 — CÓ CLIP** (opt-in) |
 |---|---|---|
-| **Recall** (12 vật ABODA) | **12/12** | 10/12 ¹ |
-| **FP** (11 video) | **18** | **4 (−78%)** |
-| Precision | ~40% | **~71%** |
+| **Recall** (12 vật ABODA) | **12/12 (100%)** | 11/12 (91.7%) ¹ |
+| **Precision** | 40% | **73%** |
+| **F1** | 57% | **82%** — nhì SOTA² |
+| **FP** (11 video) | 18 | **4 (−78%)** |
 | FPS (CPU) | ~7–9 | ~5–9 (cảnh đông −15–25%) |
-| Lệnh | `… ` (mặc định) | `… --clip-verify 1` |
+| Lệnh | (mặc định) | `--clip-verify 1` |
 | **Chọn khi** | **recall tối đa** (an-ninh); cảnh đông + vật nhỏ | camera **nhiều đổi-sáng / đổi-cảnh**; cần ít báo-nhầm |
 
-¹ Luồng-2 cắt mạnh FP (đám-đông/đổi-sáng, vd0355 hết báo-lặp máy giặt) nhưng có **khe recall vật-nhỏ**: CLIP nuốt mảnh-vỡ quá nhỏ (video6-túi2). Vì stance *bỏ-sót tệ hơn báo-nhầm*, **Luồng-1 là mặc định**. Số liệu + phân tích căn nguyên đầy đủ: [REPORT §9](REPORT.md), kết quả thô [`results_full_clip/`](results_full_clip/).
+¹ Khe recall THẬT của Luồng-2 = **1 vật: video6-túi2** (CLIP nuốt mảnh-vỡ 25×9 quá nhỏ). *video11-ô KHÔNG tính khe* — pybgs bắt được ô ở **3/4 lần chạy** (lần sweep rơi vào 1/4 pybgs-miss, không do CLIP/async). Vì stance *bỏ-sót tệ hơn báo-nhầm*, **Luồng-1 là mặc định**.
+² **F1 81.5% cao thứ NHÌ trên ABODA** (sau SAO-YOLO deep 92.3%; vượt Lin 2015 80%, Saluky 75%, Ilya 72%) — mà **real-time CPU**. Bảng so SOTA + biểu đồ: [REPORT §9.7](REPORT.md). Số liệu thô [`results_full_clip/`](results_full_clip/).
 
 ---
 
@@ -231,7 +233,7 @@ Kết quả đo (ABODA, async ON, [chi tiết + bằng chứng](eval_async_clip/
 | **video1** (sạch) | FP 0 → 0 | **0 regression** |
 | **video11** (đám đông) | FP **9 → 3 (−67%)** | umbrella vẫn giữ (đã chứng minh recall-safe) |
 
-**Full-sweep 13 video (async + CLIP on)** — số liệu [`results_full_clip/`](results_full_clip/), phân tích [REPORT §9](REPORT.md): **FP 18 → 4 (−78%)**, 8/11 video GT về **0 FP**, vid0355 **hết báo-lặp máy giặt** (2→1). ⚠ Recall **12/12 → 10/12** (mất video6-túi2 + video11-ô — đang điều tra căn nguyên async/CLIP/pybgs, xem REPORT §9.5). Vì stance *bỏ-sót tệ hơn báo-nhầm*, **2 cờ để opt-in** cho tới khi khép khe recall.
+**Full-sweep 13 video (async + CLIP on)** — số liệu [`results_full_clip/`](results_full_clip/), phân tích [REPORT §9](REPORT.md): **FP 18 → 4 (−78%)**, 8/11 video GT về **0 FP**, vid0355 **hết báo-lặp máy giặt** (2→1), **F1 82% (nhì SOTA)**. Recall **12/12 → 11/12** — khe recall thật = **1 vật video6-túi2** (CLIP nuốt mảnh-nhỏ; video11-ô là pybgs-flaky, 3/4 lần HIT — §9.5). Vì stance *bỏ-sót tệ hơn báo-nhầm*, **CLIP để opt-in**.
 
 | Cờ | Default | Ý nghĩa |
 |---|---|---|

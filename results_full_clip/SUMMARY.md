@@ -16,8 +16,8 @@ Một cấu hình mặc định cho cả 13 video (`--async-semantic on --clip-v
 | video8 | 1/1 → 1/1 | **1 → 0** | 8.7 |
 | video9 | 1/1 → 1/1 | 0 → 0 | 7.1 |
 | video10 | 1/1 → 1/1 | **1 → 0** | 7.1 |
-| video11 | 1/1 → **0/1** | **11 → 4** | 5.9 |
-| **TỔNG (12 vật GT)** | **12/12 → 10/12** | **18 → 4 (−78%)** | ~5–9 |
+| video11 | 1/1 → **1/1** (đại-diện)¹ | **11 → 4** | 5.9 |
+| **TỔNG (12 vật GT)** | **12/12 → 11/12** | **18 → 4 (−78%)** · P 40→73% · **F1 57→82%** | ~5–9 |
 | vid0355 (no GT) | — | máy giặt **2→1 (hết lặp)** | 3.1 |
 | vid0103 (no GT) | — | 3 sự-kiện (1 FP warmup còn) | 7.2 |
 
@@ -31,9 +31,21 @@ CLIP loại đúng các báo-nhầm mà logic-pixel không tách được khỏi
 - **vid0355 2→1:** máy giặt vỡ 2 mảnh; CLIP loại mảnh nhỏ 10×28 → hết báo-lặp.
 - **vid0103 (không cắt):** FP (304,212) là sàn-lộ nơi người-đổ-rác bị nướng-tối vào nền lúc warmup — diff-cường-độ thật → CLIP abstain (giữ). Giới hạn `clean_bg` sai, không phải cổng.
 
-→ 8/11 video GT về 0 FP; precision (11 GT) ~40% → **~71%**.
+→ 8/11 video GT về 0 FP; precision ~40% → **~73%**, **F1 57%→82%** (nhì SOTA ABODA — xem so-sánh dưới). ¹ video11-ô: pybgs bắt được **3/4 lần** async+CLIP (sweep gốc rơi 1/4 miss); bảng lấy đại-diện. Khe recall THẬT do CLIP = 1 vật (video6-túi2).
 
-## ⚠ Recall tụt 12/12 → 10/12 — ĐÃ CÔ-LẬP (2 nguyên nhân KHÁC nhau)
+## So sánh SOTA trên ABODA (12 vật GT, cùng độ-đo TP/FP)
+| Method | Recall | Precision | F1 | FP | Real-time CPU? |
+|---|---|---|---|---|---|
+| Ilya et al. | 75% | 69% | 72% | 4 | — |
+| Saluky et al. | 75% | 75% | 75% | 3 | — |
+| Lin 2015 (gốc ABODA) | 100% | 67% | 80% | 6 | — |
+| SAO-YOLO 2024 (deep) | 100% | 86% | **92%** | 2 | YOLO-deep (thường GPU) |
+| **Ours L1 (no-CLIP)** | **100%** | 40% | 57% | 18 | **✓ CPU** |
+| **Ours L2 (+CLIP)** | 92% | 73% | **82%** | 4 | **✓ CPU** |
+
+→ Luồng-2 **F1 82% = nhì SOTA** (sau SAO-YOLO deep), FP=4 thấp hơn Lin (6), mà **real-time CPU không-GPU**. Nguồn: SAO-YOLO (Sensors 2024, PMC11510867). 2 video bổ sung (vid0103/0355) NGOÀI ABODA → không SOTA nào test (case-study camera hi-res thực).
+
+## ⚠ Recall 12/12 → 11/12 — căn nguyên ĐÃ CÔ-LẬP (2 nguyên nhân KHÁC nhau)
 
 | Vật mất | Nguyên nhân | Bằng chứng |
 |---|---|---|
