@@ -573,6 +573,15 @@ def parse_args(argv=None):
                           help="only suppress if the top-1 (a not-object class) softmax prob >= this "
                                "(model confident it's a specific non-object). Higher = suppresses fewer.")
     advanced.add_argument("--clip-pad", type=int, default=8, help="px padding around the bbox before the CLIP crop")
+    advanced.add_argument("--clip-min-area", type=int, default=0,
+                          help="RECALL-SAFETY knob: skip the CLIP verifier (KEEP = abstain) for candidate "
+                               "bboxes SMALLER than this area (px^2). CLIP can FALSE-SUPPRESS a small/low-"
+                               "contrast object it doesn't visually recognise as an object -- e.g. video6's "
+                               "2nd bag reads as 'a plain wall' (p_obj~0.01) at ANY crop size -> a real FN. "
+                               "TRADE-OFF: small objects and small crowd-FP overlap in size, so raising this "
+                               "recovers small-object recall but lets small crowd-FP back (video11). 0 = "
+                               "verify all (max FP-cut, matches the REPORT sweep). Raise (~300+) to protect "
+                               "small objects for strict 'miss-is-worse-than-false-alarm' deployments.")
     advanced.add_argument("--clip-recheck-s", type=float, default=2.0,
                           help="re-verify a cached candidate after this many seconds (so a scene that changes "
                                "person->revealed object is re-judged). 0 = cache the decision permanently.")
@@ -1301,7 +1310,7 @@ def main(argv=None, *, on_frame=None, on_warmup=None, should_stop=None, rejected
                 # suppress ONLY if the crop is confidently a non-object (person/crowd/floor/wall/...)
                 # with low object-likeness; abstains (keeps) on anything ambiguous -> recall-safe.
                 # Runs AFTER owner-gate so the owner has usually left -> the crop shows the object.
-                if clip_verifier is not None:
+                if clip_verifier is not None and (b[2] - b[0]) * (b[3] - b[1]) >= args.clip_min_area:
                     cached = clip_cache.get(cand.cand_id)
                     ran_clip = cached is None or (clip_recheck_frames and (i - cached[0]) >= clip_recheck_frames)
                     if ran_clip:                                  # verify() runs once per cand (then every recheck_s)

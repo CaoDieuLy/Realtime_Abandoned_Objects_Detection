@@ -499,10 +499,32 @@ CLIP loại đúng nhóm báo-nhầm mà logic-pixel không tách được khỏ
 
 **8/11 video GT về 0 FP.** Precision (11 GT) từ 12/(12+18)≈40% → 10/(10+4)≈**71%**.
 
-### 9.5. Đánh đổi & việc còn dở
+### 9.5. Căn nguyên recall tụt 12/12 → 10/12 (đã cô-lập)
 
-- **Chi phí tốc độ CLIP:** ~600ms/crop CPU, 1 lần/ứng-viên → cảnh đông (nhiều ứng-viên) tốn ~15–25% FPS (video11 ~7.2→5.9); cảnh thưa ~0. Giảm bằng `--clip-recheck-s` cao hơn hoặc model nhỏ (MobileCLIP2-S2).
-- **⚠ Recall tụt 12/12 → 10/12** (mất **video6-túi2** @f5679 và **video11-ô**). Đây là điểm *chưa kết luận*: đang chạy thí-nghiệm cô-lập A(sync,no-clip) / B(async,no-clip) / C(async,clip) trên video11 (`results_full_clip/diag_umbrella/`) để tách nguyên nhân là **async** (YOLO dày hơn → mask người reset `static_age` của vật nhiều/lệch hơn) hay **CLIP** (loại nhầm crop mảnh-nhỏ) hay **pybgs** (không tất định). Phân tích căn nguyên + đề xuất sửa sẽ cập nhật ở bản kế tiếp. Vì stance **"bỏ-sót tệ hơn báo-nhầm"**, hai cơ chế này để **opt-in** (`--clip-verify 0`, `--async-semantic off`) cho tới khi khép được khe recall.
+Hai vật mất đến từ **hai nguyên nhân KHÁC nhau** — cô-lập bằng thí-nghiệm A(sync,no-clip)/B(async,no-clip)/C(async,clip) trên video11 (`results_full_clip/diag_umbrella/`) và test CLIP trực-tiếp trên crop (`results_full_clip/diag_minarea/`):
+
+| Vật mất | Nguyên nhân | Bằng chứng |
+|---|---|---|
+| **video11-ô** | **pybgs không-tất-định** (async & CLIP **vô tội**) | A/B/**C đều HIT ô** ở lần chạy khác; log C: `[CLIP] c(311,270) KEEP 'an umbrella on the ground' p_obj=0.46`. Sweep chỉ rơi vào lần pybgs không giữ blob ô đủ 5s. |
+| **video6-túi2** | **CLIP loại nhầm** (giới-hạn tri-giác) | pipeline chỉ bắt **mảnh 25×9**; CLIP đọc crop = `'a plain wall'`, **p_obj≈0.01** ở **mọi cỡ crop** (24→80px) → suppress. Túi tối/mờ, CLIP không "nhìn ra" là túi. |
+
+**Bài học then chốt:** cơ chế abstain (`p_obj ≥ 0.25`) **recall-safe cho vật CLIP nhận-ra được** (ô: p_obj 0.4 → giữ) nhưng **KHÔNG cứu vật CLIP không nhận ra** (túi2: crop thật sự trông giống tường). Đây là **giới hạn tri-giác của CLIP**, không phải bug.
+
+**Núm `--clip-min-area` (recall-safety) và vì sao không có "viên đạn bạc":** bỏ qua CLIP cho bbox nhỏ hơn ngưỡng (giữ = abstain). Đo:
+
+| `--clip-min-area` | video6-túi2 | video11 FP | vid0355 dup |
+|---|---|---|---|
+| **0** (mặc định, = bảng §9.3) | ✗ mất | **4** | ✓ hết lặp |
+| **500** | ✓ về (2/2) | **11** (về baseline) | ✗ lặp lại (mảnh 280<500) |
+
+→ Vì **vật-nhỏ và FP-đám-đông-nhỏ TRÙNG cỡ VÀ đều "trông giống nền" với CLIP**, không ngưỡng nào tách sạch (cửa-sổ 225–280px² quá hẹp = overfit). Nâng min-area cứu recall vật-nhỏ nhưng **trả lại FP-đám-đông-nhỏ + mất dup-fix**. **Lợi ích SẠCH, recall-safe của CLIP = FP vùng-LỚN** (đổi-sáng video7 3→0; mảnh-vỡ vd0355) — nơi vật hiếm khi "giống tường" ở cỡ lớn; **FP-đám-đông-nhỏ là đánh-đổi**.
+
+### 9.6. Khuyến nghị vận hành
+
+- **Async-semantic:** an-toàn (parity + bonus recall), **nên bật** — đã default `auto`.
+- **CLIP verifier:** **để opt-in** (`--clip-verify 0` mặc định). Bật cho camera **nhiều đổi-sáng/đổi-cảnh** (lợi ích lớn, recall-safe). Cân nhắc khi cảnh **đám-đông + vật-nhỏ** (rủi-ro FN vật-nhỏ). `--clip-min-area` là núm đổi recall↔precision cho vật-nhỏ; `--clip-recheck-s`↑ / `--clip-model MobileCLIP2-S2` giảm chi-phí FPS.
+- **Chi phí tốc độ CLIP:** ~600ms/crop CPU, 1 lần/ứng-viên → cảnh đông tốn ~15–25% FPS; cảnh thưa ~0.
+- Vì stance **"bỏ-sót tệ hơn báo-nhầm"**, khe recall vật-nhỏ (video6-túi2) là lý do CLIP **chưa** thành default-on. Hướng khép khe: detector **nhận-ra-vật** mạnh hơn (§8) để không phải dựa vào tri-giác CLIP trên mảnh-vỡ.
 
 ---
 

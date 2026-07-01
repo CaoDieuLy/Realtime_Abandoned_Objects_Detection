@@ -33,11 +33,16 @@ CLIP loại đúng các báo-nhầm mà logic-pixel không tách được khỏi
 
 → 8/11 video GT về 0 FP; precision (11 GT) ~40% → **~71%**.
 
-## ⚠ Recall tụt 12/12 → 10/12 — ĐANG ĐIỀU TRA
+## ⚠ Recall tụt 12/12 → 10/12 — ĐÃ CÔ-LẬP (2 nguyên nhân KHÁC nhau)
 
-Mất **video6-túi2** (@f5679) và **video11-ô**. Thí nghiệm cô-lập đang chạy: [`diag_umbrella/`](diag_umbrella/) — A(sync,no-clip)/B(async,no-clip)/C(async,clip) ×2 trên video11 để tách nguyên nhân **async** (YOLO dày hơn → mask người reset `static_age` của vật) vs **CLIP** (loại nhầm crop mảnh-nhỏ) vs **pybgs** (không tất định). Xem `diag_umbrella/_diag.log`. Kết luận + đề xuất sửa sẽ cập nhật sau.
+| Vật mất | Nguyên nhân | Bằng chứng |
+|---|---|---|
+| **video11-ô** | **pybgs** (async & CLIP vô tội) | [`diag_umbrella/`](diag_umbrella/): A(sync)/B(async)/C(async+clip) **đều HIT ô**; C log `CLIP KEEP 'an umbrella' p_obj=0.46`. Sweep chỉ xui pybgs. |
+| **video6-túi2** | **CLIP loại nhầm mảnh-nhỏ** | pipeline chỉ bắt mảnh 25×9; CLIP đọc `'a plain wall'` p_obj≈0.01 ở **mọi cỡ crop** → suppress. Giới hạn tri-giác CLIP (túi tối/mờ). |
 
-Vì stance **"bỏ-sót tệ hơn báo-nhầm"**, cả hai cơ chế để **opt-in** (`--clip-verify 0`, `--async-semantic off`) cho tới khi khép được khe recall.
+**Núm `--clip-min-area`** (bỏ qua CLIP cho bbox nhỏ) — đo ([`diag_minarea/`](diag_minarea/)): min-area **0** → túi2 mất, video11 FP **4**; min-area **500** → túi2 về (2/2) nhưng video11 FP **11** + mất dup-fix vid0355. Vật-nhỏ và FP-đám-đông-nhỏ trùng cỡ → **không tách sạch**. Lợi ích SẠCH recall-safe của CLIP = **FP vùng-lớn (đổi-sáng/mảnh-vỡ)**; FP-đám-đông-nhỏ là đánh-đổi. Chi tiết: [REPORT §9.5–9.6](../REPORT.md).
+
+**Khuyến nghị:** async **nên bật** (đã default auto). CLIP **để opt-in** (`--clip-verify 0` mặc định) — bật cho camera nhiều đổi-sáng/đổi-cảnh; núm `--clip-min-area` đổi recall↔precision vật-nhỏ. Vì stance *bỏ-sót tệ hơn báo-nhầm*, khe recall vật-nhỏ là lý do CLIP chưa default-on.
 
 ## Tái lập
 ```bash
