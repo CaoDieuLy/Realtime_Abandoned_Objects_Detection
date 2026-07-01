@@ -335,6 +335,82 @@ class PybgsViBe:
         return  # pybgs updates internally during apply()
 
 
+class AsyncSemantic:
+    """Run the online semantic engine in a BACKGROUND THREAD so the main BGS/FSM loop never
+    blocks on YOLO. The heavy inference (OpenVINO / ONNX / PyTorch, like pybgs ViBe, releases
+    the GIL during native compute) overlaps the main loop on another core. The loop consumes the
+    most-recent COMPLETED maps; for AOD (objects static for seconds) a map a few frames stale is
+    harmless. Only used for the no-feedback pipeline -- RT-SBS feedback needs the CURRENT frame's
+    map, so that path stays synchronous.
+
+    All engine.infer() calls (this worker AND the main thread's occasional heal-revealed re-infer)
+    go through ``infer_lock`` so the single YOLO model is never entered from two threads at once.
+    """
+
+    def __init__(self, engine, sem_proc_width: int, proc_hw: tuple[int, int]):
+        self.engine = engine
+        self.sem_proc_width = int(sem_proc_width)
+        self.h, self.w = proc_hw
+        self.infer_lock = threading.Lock()       # serialize ALL engine.infer() (worker + main-thread heal)
+        self._lock = threading.Lock()            # guards the frame/result handoff
+        self._frame = None
+        self._frame_id = -1
+        self._result = None                      # dict(animate, object, stuff, src)
+        self._stop = False
+        self._wake = threading.Event()
+        self.infer_count = 0
+        self._thread = threading.Thread(target=self._run, name="async-semantic", daemon=True)
+        self._thread.start()
+
+    def _to_proc(self, m):
+        if m is None or m.shape[:2] == (self.h, self.w):
+            return m
+        return cv2.resize(m, (self.w, self.h), interpolation=cv2.INTER_AREA)
+
+    def submit(self, frame_full: np.ndarray, frame_id: int) -> None:
+        """Hand the worker the latest full-res frame (it always works on the most recent one)."""
+        with self._lock:
+            self._frame = frame_full
+            self._frame_id = frame_id
+        self._wake.set()
+
+    def latest(self):
+        """Most recent completed result dict (or None until the first inference finishes)."""
+        with self._lock:
+            return self._result
+
+    def _run(self) -> None:
+        while not self._stop:
+            self._wake.wait(timeout=0.2)
+            self._wake.clear()
+            if self._stop:
+                break
+            with self._lock:
+                frame = self._frame
+                fid = self._frame_id
+            if frame is None:
+                continue
+            frame_yolo = resize_to_width(frame, self.sem_proc_width)
+            with self.infer_lock:
+                animate = self.engine.infer(frame_yolo)
+                obj = getattr(self.engine, "last_object_score", None)
+                stuff = getattr(self.engine, "last_stuff_score", None)
+            res = {
+                "animate": self._to_proc(animate),
+                "object": self._to_proc(obj),
+                "stuff": self._to_proc(stuff),
+                "src": fid,
+            }
+            with self._lock:
+                self._result = res
+            self.infer_count += 1
+
+    def stop(self) -> None:
+        self._stop = True
+        self._wake.set()
+        self._thread.join(timeout=2.0)
+
+
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(
         description="demov2 abandoned-object detection — clean-background FSM + semantic keep-gate. "
@@ -390,6 +466,12 @@ def parse_args(argv=None):
         help="strict reads exact frame-indexed files like 000005.png; sequential mimics full per-frame folders",
     )
     common.add_argument("--semantic-every", type=int, default=5, help="RT-SBS semantic framerate: use one dense map every N frames")
+    advanced.add_argument("--async-semantic", choices=["auto", "on", "off"], default="auto",
+                    help="run the online semantic engine (YOLO/SegFormer) in a BACKGROUND THREAD so the "
+                         "BGS/FSM loop never stalls on inference; the loop uses the most-recent completed "
+                         "map (a few frames stale = harmless for AOD). auto = ON for no-feedback (default) "
+                         "mode, OFF when RT-SBS feedback is active (needs the current frame's map) or for "
+                         "offline dense maps. Set off to force the old synchronous every-N-frames behaviour.")
     advanced.add_argument("--segformer-variant", choices=["b0", "b1"], default="b0")
     advanced.add_argument("--segformer-device", choices=["auto", "cpu", "cuda"], default="auto")
     advanced.add_argument("--segformer-min-conf", type=float, default=0.0)
@@ -473,6 +555,27 @@ def parse_args(argv=None):
                                "of current newdiff pixels. A frozen-bg object always differs (support stays high); "
                                "a stale ghost whose diff was absorbed (e.g. lighting eaten by light-comp) drops to "
                                "~0 -> deferred, not alerted. Safe: brief occlusion only DELAYS (re-ages). 0=off.")
+    # open-vocab CLIP verifier (per-alert, MobileCLIP2 via open_clip)
+    advanced.add_argument("--clip-verify", type=int, default=0,
+                          help="1=verify each alert crop with a zero-shot CLIP (MobileCLIP2). Runs ONCE per "
+                               "candidate (cached) so it barely touches FPS. SUPPRESSES only when the crop is "
+                               "CONFIDENTLY not an object (person/crowd/floor/wall/door/...) AND has low "
+                               "object-likeness; abstains (keeps) otherwise -> recall-safe. Cuts crowd + "
+                               "scene-change FP that pixel logic can't separate from a leave-behind. "
+                               "Needs: pip install open_clip_torch (+ torch).")
+    advanced.add_argument("--clip-model", default="MobileCLIP2-B", help="open_clip model name")
+    advanced.add_argument("--clip-pretrained", default="", help="open_clip pretrained tag (blank=auto)")
+    advanced.add_argument("--clip-device", default="cpu", help="cpu / cuda")
+    advanced.add_argument("--clip-keep-conf", type=float, default=0.25,
+                          help="keep (never suppress) if grouped P(object classes) >= this. Higher = more "
+                               "recall-safe (suppresses fewer).")
+    advanced.add_argument("--clip-suppress-conf", type=float, default=0.30,
+                          help="only suppress if the top-1 (a not-object class) softmax prob >= this "
+                               "(model confident it's a specific non-object). Higher = suppresses fewer.")
+    advanced.add_argument("--clip-pad", type=int, default=8, help="px padding around the bbox before the CLIP crop")
+    advanced.add_argument("--clip-recheck-s", type=float, default=2.0,
+                          help="re-verify a cached candidate after this many seconds (so a scene that changes "
+                               "person->revealed object is re-judged). 0 = cache the decision permanently.")
     advanced.add_argument("--heal-cov", type=float, default=0.15)
     advanced.add_argument("--heal-alpha", type=float, default=1.0)
     advanced.add_argument("--heal-alpha-dark", type=float, default=0.05)
@@ -862,6 +965,29 @@ def main(argv=None, *, on_frame=None, on_warmup=None, should_stop=None, rejected
         and args.bgs_backend == "controlled"  # pybgs can't accept the corrected update mask
         and (semantic_sequence is not None or online_semantic is not None)
     )
+    # async semantic: only safe when feedback is OFF (no-feedback mode) and we have an ONLINE engine
+    # (dense file maps are cheap frame-indexed reads -> no benefit). RT-SBS feedback couples the
+    # current frame's map into the ViBE update, so that path must stay synchronous.
+    async_on = online_semantic is not None and not feedback_on and (
+        args.async_semantic == "on" or (args.async_semantic == "auto"))
+    async_sem = AsyncSemantic(online_semantic, args.sem_proc_width, (h, w)) if async_on else None
+    if async_sem is not None:
+        async_sem.submit(first_frame_for_semantic, 0)   # prime the worker so early frames get a map
+    last_consumed_src = -1
+
+    # per-alert open-vocab verifier (lazy import so non-CLIP runs don't need open_clip/torch)
+    clip_verifier = None
+    if args.clip_verify:
+        from core.clip_verifier import ClipVerifier
+        clip_verifier = ClipVerifier(
+            model_name=args.clip_model, pretrained=args.clip_pretrained, device=args.clip_device,
+            keep_conf=args.clip_keep_conf, suppress_conf=args.clip_suppress_conf, pad=args.clip_pad,
+        )
+        print(f"[clip-verify] {clip_verifier.model_name}/{clip_verifier.pretrained} ON "
+              f"(keep>={args.clip_keep_conf} suppress-top1>={args.clip_suppress_conf} recheck={args.clip_recheck_s}s)")
+    clip_cache: dict[int, tuple[int, object]] = {}   # cand_id -> (frame_idx, ClipResult)
+    clip_recheck_frames = max(0, int(args.clip_recheck_s * fps))
+
     crowd = CrowdEstimator(n_crowd=args.crowd_n)
     density = "low"
     alerted_locs: list[list[int]] = []          # [cx, cy, last_seen_frame, alert_frame] for location dedup
@@ -883,7 +1009,8 @@ def main(argv=None, *, on_frame=None, on_warmup=None, should_stop=None, rejected
         f"[demo2] mode={args.mode} | bgs-backend={args.bgs_backend} | "
         f"semantic-feedback={'ON' if feedback_on else 'OFF'} | motion-gate={args.aod_motion_source} | "
         f"semantic-gate={'on' if semantic_gate_on else 'off'} | relight={'on' if args.relight else 'off'} | "
-        f"owner-gate={'on' if args.owner_gate else 'off'} | dedup={args.dedup_dist}px"
+        f"owner-gate={'on' if args.owner_gate else 'off'} | dedup={args.dedup_dist}px | "
+        f"async-semantic={'ON' if async_on else 'off'}"
     )
     t0 = time.time()
     total_label = total if total > 0 else "live"
@@ -917,7 +1044,20 @@ def main(argv=None, *, on_frame=None, on_warmup=None, should_stop=None, rejected
         # --- semantic inference (for the AOD gate; independent of the feedback toggle) ---
         ran_semantic = False
         has_semantic = semantic_sequence is not None or online_semantic is not None
-        if has_semantic and (i % max(1, args.semantic_every)) == 0:
+        if async_on:
+            # non-blocking: hand the worker the latest frame, consume its most-recent finished map.
+            # ran_semantic fires only on a FRESH result so density/person-presence updates stay correct.
+            async_sem.submit(frame_full, i)
+            res = async_sem.latest()
+            if res is not None and res["src"] != last_consumed_src:
+                last_consumed_src = res["src"]
+                ran_semantic = True
+                last_semantic_vis = res["animate"]
+                if semantic_gate_on:
+                    last_animate_score = res["animate"]
+                    last_object_score = res["object"]
+                    last_stuff_score = res["stuff"]
+        elif has_semantic and (i % max(1, args.semantic_every)) == 0:
             if semantic_sequence is not None:
                 semantic_map = semantic_sequence.read(i)
             elif i == 0 and online_initial_semantic is not None:
@@ -1016,7 +1156,11 @@ def main(argv=None, *, on_frame=None, on_warmup=None, should_stop=None, rejected
         relearning_now = bool(aod.get("relearning", False))
         if (prev_relearning and not relearning_now and args.heal_revealed
                 and online_semantic is not None and sfg.clean_bg_color is not None):
-            ra = online_semantic.infer(np.clip(sfg.clean_bg_color, 0, 255).astype(np.uint8))
+            if async_sem is not None:                       # serialize with the worker's infer()
+                with async_sem.infer_lock:
+                    ra = online_semantic.infer(np.clip(sfg.clean_bg_color, 0, 255).astype(np.uint8))
+            else:
+                ra = online_semantic.infer(np.clip(sfg.clean_bg_color, 0, 255).astype(np.uint8))
             if ra is not None and ra.shape[:2] != (h, w):
                 ra = cv2.resize(ra, (w, h), interpolation=cv2.INTER_NEAREST)
             rbm = cv2.dilate((ra >= args.tau_animate * 65535).astype(np.uint8),
@@ -1153,6 +1297,25 @@ def main(argv=None, *, on_frame=None, on_warmup=None, should_stop=None, rejected
                     alerted.add(cand.cand_id)
                     continue
 
+                # open-vocab verify (per-alert, cached per candidate id, optional TTL re-check):
+                # suppress ONLY if the crop is confidently a non-object (person/crowd/floor/wall/...)
+                # with low object-likeness; abstains (keeps) on anything ambiguous -> recall-safe.
+                # Runs AFTER owner-gate so the owner has usually left -> the crop shows the object.
+                if clip_verifier is not None:
+                    cached = clip_cache.get(cand.cand_id)
+                    ran_clip = cached is None or (clip_recheck_frames and (i - cached[0]) >= clip_recheck_frames)
+                    if ran_clip:                                  # verify() runs once per cand (then every recheck_s)
+                        cdec = clip_verifier.verify(frame, b)
+                        clip_cache[cand.cand_id] = (i, cdec)
+                        if args.debug_owner:
+                            print(f"[CLIP] f{i} c({rcx},{rcy}) {'SUPPRESS' if cdec.suppress else 'KEEP'} "
+                                  f"top='{cdec.label}' p_obj={cdec.p_object:.2f} p_not={cdec.p_not_object:.2f} "
+                                  f"top1={cdec.top1:.2f}", flush=True)
+                    else:
+                        cdec = cached[1]
+                    if cdec.suppress:
+                        continue   # defer (no alerted.add): a genuinely-new cand id can still alert later
+
                 if args.debug_owner:
                     rch = int(max(args.owner_margin, args.owner_k * ((b[2] - b[0]) * (b[3] - b[1])) ** 0.5))
                     qy0, qy1 = max(0, rcy - rch), min(h, rcy + rch + 1)
@@ -1263,9 +1426,13 @@ def main(argv=None, *, on_frame=None, on_warmup=None, should_stop=None, rejected
             )
 
     cap.release()
+    if async_sem is not None:
+        async_sem.stop()
     elapsed = time.time() - t0
     print(f"\n[demo2] done: {i} frames, {len(events)} events, {i / max(0.001, elapsed):.1f} FPS"
-          f" | light-comp fired {getattr(sfg, 'lightcomp_count', 0)} frames")
+          f" | light-comp fired {getattr(sfg, 'lightcomp_count', 0)} frames"
+          f"{f' | async-semantic infers={async_sem.infer_count}' if async_sem is not None else ''}"
+          f"{f' | clip-verify calls={clip_verifier.n_verify}' if clip_verifier is not None else ''}")
 
     with open(os.path.join(args.outdir, "events.json"), "w", encoding="utf-8") as f:
         json.dump(events, f, indent=2, ensure_ascii=False)

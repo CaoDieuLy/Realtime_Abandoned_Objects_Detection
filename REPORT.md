@@ -443,6 +443,69 @@ Chúng tôi xây dựng một hệ thống AOD **thời-gian-thực trên CPU** 
 
 ---
 
+## 9. Cải tiến mở rộng: Async-semantic + CLIP verifier (bổ sung sau báo cáo)
+
+> Phần này **bổ sung** vào hệ thống ở §1–§8 (không thay đổi kết quả gốc **Recall 12/12, FP 18** vốn là mốc so sánh). Hai cơ chế được thêm dựa trên nghiên cứu SOTA: (i) **async-semantic** — chạy detector ở luồng nền để tăng thông lượng; (ii) **cổng xác minh CLIP** (MobileCLIP2 [15]) — realize đúng hướng "open-vocabulary verification" đã nêu ở §8. Mã: `core/clip_verifier.py` + cờ `--async-semantic`, `--clip-verify` trong `run_rtsbs_aod.py`. Số liệu thô: `results_full_clip/` (13 video, mỗi video `events.json` + `run.log`).
+
+### 9.1. Async-semantic (thông lượng)
+
+Ở chế độ mặc định `no-feedback`, kết quả semantic chỉ nuôi *cổng AOD hạ nguồn* (`last_animate_score`/`last_object_score`) chứ không ghi ngược vào ViBe, nên có thể **tách detector ra một luồng nền** (`AsyncSemantic`): vòng BGS/FSM không dừng chờ YOLO mà dùng bản-đồ hoàn-thành gần nhất (cũ vài khung = vô hại vì vật phải đứng yên hàng giây). Nhờ YOLO (OpenVINO, native) **nhả GIL**, nó chạy song song trên lõi khác. *Chỉ áp dụng no-feedback*; chế độ RT-SBS feedback cần bản-đồ đúng-khung nên giữ đồng bộ.
+
+**Kết quả** (video11, CPU nhàn, đo xen kẽ): sync 5.0/5.1 → **async 6.1/6.0 FPS = +20%**; **giữ nguyên sự-kiện** (10/10 khớp, ±1–3 khung), không đổi độ chính xác. Cảnh nhẹ hơn lợi FPS nhiều hơn (video11 là cảnh đông, main-loop đã nặng nên YOLO chỉ ~12% thời gian).
+
+### 9.2. Cổng xác minh CLIP (giảm báo-nhầm)
+
+Một CLIP zero-shot (**MobileCLIP2-B** [15], qua `open_clip`) chạy **một lần mỗi cảnh-báo** (có cache theo ứng-viên) tại *cổng cuối* — sau owner-gate/light-struct. Nó phán *nội dung crop* theo hai nhóm nhắc-lệnh: **OBJECT** (balo/vali/hộp/ô…) vs **NOT-OBJECT** (người/đám-đông/sàn/tường/cửa/xe/bóng/lóa). **Nguyên tắc recall-safe (abstain):** chỉ *loại* khi crop **chắc-chắn không phải vật** — `P(object) < 0.25` **và** lớp-đầu (không-phải-vật) `≥ 0.30`; còn lại **giữ**. Đặt *sau* owner-gate nên lúc bắn chủ thường đã rời → crop là vật, không phải người — né đúng bẫy đã hạ cổng "person-detector" trước đây (§6.4).
+
+### 9.3. Kết quả full-sweep 13 video (async + CLIP on)
+
+Một cấu hình mặc định cho cả 13 video (chỉ khác `--bg-learn-seconds` theo cảnh), thêm `--clip-verify 1`; chấm bằng scorer tự-động (GT quy về proc-640, khớp *cả vị trí lẫn thời điểm* — video6 có 2 túi cùng chỗ khác thời điểm).
+
+**Hình 14 — FP mỗi video: baseline vs async+CLIP.**
+
+![fp per video](report_figures/fig_asyncclip_fp.png)
+
+**Hình 15 — Tổng kết Recall & FP (11 video GT).**
+
+![summary](report_figures/fig_asyncclip_summary.png)
+
+**Hình 16 — Tốc độ mỗi video (async + CLIP on, CPU).**
+
+![fps](report_figures/fig_asyncclip_fps.png)
+
+**Bảng 7 — Full-sweep: baseline (§6.2) vs async+CLIP.**
+
+| Video | Recall base→mới | FP base→mới | FPS |
+|---|---|---|---|
+| video1/2/3/4 | 1/1 → 1/1 | 0 → 0 | 6.4 / 7.5 / 7.3 / 6.7 |
+| video5 | 1/1 → 1/1 | **1 → 0** | 7.6 |
+| video6 | 2/2 → **1/2** | **1 → 0** | 8.2 |
+| video7 | 1/1 → 1/1 | **3 → 0** | 8.9 |
+| video8 | 1/1 → 1/1 | **1 → 0** | 8.7 |
+| video9 | 1/1 → 1/1 | 0 → 0 | 7.1 |
+| video10 | 1/1 → 1/1 | **1 → 0** | 7.1 |
+| video11 | 1/1 → **0/1** | **11 → 4** | 5.9 |
+| **TỔNG (12 vật GT)** | **12/12 → 10/12** | **18 → 4** | ~5–9 |
+| vid0355 (no GT) | — | **máy giặt 2→1 (hết lặp)** | 3.1 |
+| vid0103 (no GT) | — | 3 sự-kiện (1 FP warmup còn) | 7.2 |
+
+### 9.4. Phân tích: vì sao FP giảm mạnh (18 → 4, −78%)
+
+CLIP loại đúng nhóm báo-nhầm mà logic-pixel không tách được khỏi vật-bỏ-quên:
+- **Đổi-sáng (video7 3→0):** các patch tường/sàn "chỉ-sáng-lên" bị CLIP gọi đúng `"a plain wall"`/`"empty tiled floor"` (top-1 0.92–0.96) → loại; túi thật `p_obj≈0.99` → giữ. Đây là nhóm FP §6.6.3(a) mà light-struct/relight chỉ trị một phần.
+- **Đám đông (video11 11→4):** các cụm người/cụm-sàn detector sót được CLIP gọi `"a crowd of people"`/`"people walking"`/`"a plain wall"` → loại 7/11; 4 FP còn lại lọt vì lớp-đầu < 0.30 (CLIP *abstain* — an-toàn-recall, thà giữ hơn nuốt).
+- **Mảnh-vỡ vật to (vid0355 2→1):** máy giặt vỡ 2 mảnh; CLIP loại mảnh nhỏ 10×28 (không giống vật) → **hết báo-lặp** (§6.6.3(b) trước phải dựa dedup-distance).
+- **Không cắt được (vid0103):** FP (304,212) là **sàn-lộ-sáng nơi người-đổ-rác bị nướng-tối vào nền lúc warmup** — một *diff-cường-độ thật*, không "chắc-chắn không phải vật" → CLIP abstain (giữ). Đúng giới hạn §7(3): lỗi ở `clean_bg` sai, không phải ở cổng.
+
+**8/11 video GT về 0 FP.** Precision (11 GT) từ 12/(12+18)≈40% → 10/(10+4)≈**71%**.
+
+### 9.5. Đánh đổi & việc còn dở
+
+- **Chi phí tốc độ CLIP:** ~600ms/crop CPU, 1 lần/ứng-viên → cảnh đông (nhiều ứng-viên) tốn ~15–25% FPS (video11 ~7.2→5.9); cảnh thưa ~0. Giảm bằng `--clip-recheck-s` cao hơn hoặc model nhỏ (MobileCLIP2-S2).
+- **⚠ Recall tụt 12/12 → 10/12** (mất **video6-túi2** @f5679 và **video11-ô**). Đây là điểm *chưa kết luận*: đang chạy thí-nghiệm cô-lập A(sync,no-clip) / B(async,no-clip) / C(async,clip) trên video11 (`results_full_clip/diag_umbrella/`) để tách nguyên nhân là **async** (YOLO dày hơn → mask người reset `static_age` của vật nhiều/lệch hơn) hay **CLIP** (loại nhầm crop mảnh-nhỏ) hay **pybgs** (không tất định). Phân tích căn nguyên + đề xuất sửa sẽ cập nhật ở bản kế tiếp. Vì stance **"bỏ-sót tệ hơn báo-nhầm"**, hai cơ chế này để **opt-in** (`--clip-verify 0`, `--async-semantic off`) cho tới khi khép được khe recall.
+
+---
+
 ## Tài liệu tham khảo (References)
 
 [1] O. Barnich, M. Van Droogenbroeck. "ViBe: A universal background subtraction algorithm for video sequences." *IEEE Transactions on Image Processing*, 20(6):1709–1724, 2011.
@@ -472,6 +535,8 @@ Chúng tôi xây dựng một hệ thống AOD **thời-gian-thực trên CPU** 
 [13] Intel Corporation. "OpenVINO Toolkit: Open Visual Inference and Neural network Optimization." https://docs.openvino.ai
 
 [14] J.P. Lewis. "Fast Normalized Cross-Correlation." *Vision Interface*, 1995.
+
+[15] P.K.A. Vasu, F. Faghri, C.-L. Li, et al. "MobileCLIP2: Improving Multi-Modal Reinforced Training." *Transactions on Machine Learning Research (TMLR)*, 2025. (Apple ml-mobileclip.)
 
 ---
 

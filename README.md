@@ -47,6 +47,8 @@ Bắt buộc truyền **`--video`** hoặc **`--camera-index`**.
 | `--warmup-motion-mask 0/1` | nền sạch loại **transient ĐỘNG** lúc học (người/cửa đi qua không bị nướng vào nền) | **mặc định ON**; đặt 0 nếu thấy FP lạ ở cảnh khác. Tốt nhất vẫn là chọn **cửa-sổ-warmup lúc cảnh trống** (qua `--bg-learn-seconds`) |
 | `--proc-width` / `--sem-proc-width` | độ phân giải xử lý / cho YOLO | camera ≥1080p giữ mặc định 640/960 là tốt |
 | `--gather-px` | gộp mảnh mask để bbox **ôm vật** đầy đủ hơn | **mặc định 0** (box bám lõi vật, có thể nhỏ). Muốn box to/đầy hơn → đặt 5–10 (đánh đổi: cảnh đông dễ gộp nhiều người thành 1 box) |
+| `--async-semantic auto/on/off` | chạy YOLO ở **thread nền** để vòng chính không nghẽn | **mặc định auto** (ON cho no-feedback): **+~20% FPS**, parity event, hơi nhỉnh recall. Đặt off để về cách đồng bộ cũ |
+| `--clip-verify 0/1` | **cổng xác minh open-vocab** (MobileCLIP2) mỗi cảnh báo, lọc FP đám-đông/đổi-sáng | **mặc định OFF**. Bật 1 nếu cần ÍT FP crowd/lighting (đánh đổi ~20–25% FPS ở cảnh đông). Xem mục dưới |
 
 `python run_rtsbs_aod.py --help` chia 2 nhóm **common** (hay dùng) và **advanced** (đã tuned, ít khi đụng).
 **Output** (`--outdir`): `events.json` (mỗi cảnh báo: frame, thời điểm, tâm, bbox) + ảnh `alert_*.jpg`.
@@ -134,6 +136,8 @@ Ví dụ đọc đúng số liệu:
 
 → Không phải 30fps, nhưng **đủ cho bài toán này** (vật phải đứng yên vài giây mới báo). Nhanh hơn nữa: `--semantic-every 15`, `--yolo-imgsz 640`, hoặc GPU `--yolo-device 0`.
 
+**`--async-semantic` (mặc định auto, ON cho no-feedback):** YOLO chạy ở **thread nền** nên vòng BGS/FSM không nghẽn chờ inference. Đo trên video11 (CPU idle): sync 5.0→**async 6.1 FPS = +20%** (cảnh nhẹ lợi nhiều hơn vì YOLO chiếm tỉ lệ lớn hơn), **không đổi event** (parity), còn nhỉnh recall do map tươi hơn. Chỉ áp dụng mode no-feedback (RT-SBS feedback giữ đồng bộ). Số liệu: [`eval_async_clip/SUMMARY.md`](eval_async_clip/SUMMARY.md).
+
 ---
 
 ## Cơ chế (5 khối, thay model semantic không phải viết lại FSM)
@@ -193,6 +197,36 @@ Default `--yolo-weights yolo26s-seg_openvino_model`: lần chạy đầu **tự 
 
 Đổi backend: `--yolo-weights yolo26s-seg.pt` (PyTorch) · `yolo26n-seg.pt` (nano, nhanh nhưng recall kém) · `*.onnx`. **Không dùng INT8** (giảm recall → hỏng đúng nút thắt nhận-diện-người).
 
+## Cổng xác minh CLIP — lọc FP nâng cao (`--clip-verify`, tùy chọn)
+Cổng **open-vocabulary** chạy **một CLIP zero-shot (MobileCLIP2-B) mỗi cảnh báo** (1 lần/ứng-viên, có cache) để loại các FP mà logic pixel không tách được khỏi vật-bỏ-quên: **đám đông** (người detector sót), **đổi-trạng-thái-cảnh/đổi-sáng** (tường/sàn/cửa). Nó phán *nội dung crop* so 2 nhóm prompt OBJECT (balo/vali/hộp/ô…) vs NOT-OBJECT (người/đám đông/sàn/tường/cửa/xe/bóng/lóa).
+
+**Recall-safe (abstain):** chỉ suppress khi crop **chắc chắn không phải vật** (`P(object) < 0.25` **và** top-1 không-phải-vật `≥ 0.30`); mơ hồ → **giữ** (báo). Chạy SAU owner-gate nên lúc đó chủ thường đã rời → crop là vật, không phải người.
+
+```bash
+pip install open_clip_torch        # cần thêm (torch đã có); weights tự tải HF lần đầu
+python run_rtsbs_aod.py --video X --outdir out/ --clip-verify 1
+```
+
+Kết quả đo (ABODA, async ON, [chi tiết + bằng chứng](eval_async_clip/SUMMARY.md)):
+
+| Video | clip OFF → ON | |
+|---|---|---|
+| **video7** (đổi sáng) | FP **3 → 0** | giữ handbag (p_obj 0.99) |
+| **video1** (sạch) | FP 0 → 0 | **0 regression** |
+| **video11** (đám đông) | FP **9 → 3 (−67%)** | umbrella vẫn giữ (đã chứng minh recall-safe) |
+
+**Full-sweep 13 video (async + CLIP on)** — số liệu [`results_full_clip/`](results_full_clip/), phân tích [REPORT §9](REPORT.md): **FP 18 → 4 (−78%)**, 8/11 video GT về **0 FP**, vid0355 **hết báo-lặp máy giặt** (2→1). ⚠ Recall **12/12 → 10/12** (mất video6-túi2 + video11-ô — đang điều tra căn nguyên async/CLIP/pybgs, xem REPORT §9.5). Vì stance *bỏ-sót tệ hơn báo-nhầm*, **2 cờ để opt-in** cho tới khi khép khe recall.
+
+| Cờ | Default | Ý nghĩa |
+|---|---|---|
+| `--clip-verify` | 0 | bật/tắt cổng |
+| `--clip-keep-conf` | 0.25 | giữ (không suppress) nếu P(object) ≥ ngưỡng — **cao hơn = an toàn recall hơn** |
+| `--clip-suppress-conf` | 0.30 | chỉ suppress nếu top-1 (không-phải-vật) ≥ ngưỡng — cao hơn = suppress ít hơn |
+| `--clip-recheck-s` | 2.0 | re-verify ứng-viên sau N giây (nâng 4–5s để **giảm chi phí ở cảnh đông**) |
+| `--clip-model` | MobileCLIP2-B | đổi `MobileCLIP2-S2` để nhanh ~2–3× (đánh đổi accuracy) |
+
+**Chi phí:** ~600ms/crop CPU, 1 lần/ứng-viên → ~**20–25% FPS ở cảnh đông** (nhiều ứng-viên re-verify), ít hơn ở cảnh thưa. Giảm bằng `--clip-recheck-s` cao hơn hoặc `--clip-model MobileCLIP2-S2`. Vì có chi phí nên **default OFF**; bật cho deployment cần ít FP crowd/lighting.
+
 ## Cấu trúc
 ```
 run_rtsbs_aod.py        # orchestrator: CLI + preset --mode + vòng lặp chính
@@ -204,7 +238,9 @@ core/
   semantic_classes.py   # tập lớp animate/object/stuff (label → ids) + scale điểm
   static_matching.py    # gom blob → theo vết → ứng viên
   dense_semantic.py     # đọc dense semantic map (mode dense)
+  clip_verifier.py      # cổng xác minh open-vocab MobileCLIP2 (--clip-verify)
 tools/                  # sinh dense semantic (SegFormer/PSPNet)
+eval_async_clip/ # kết quả đo async + CLIP (events.json + alert jpg + log + SUMMARY.md)
 requirements.txt
 solution_analysis.md    # phân tích chi tiết + quá trình phát triển + kết quả
 ```

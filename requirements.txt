@@ -25,3 +25,9 @@ transformers>=4.41
 safetensors>=0.4
 huggingface-hub>=0.23
 pillow>=10.0
+
+# --- Per-alert open-vocabulary verifier (optional; --clip-verify 1) ---
+# A zero-shot CLIP (MobileCLIP2-B) run ONCE per alert crop to suppress crowd / scene-change false
+# positives the pixel logic can't separate from a leave-behind (recall-safe: abstains when unsure).
+# Needs torch (above). Weights auto-download from HuggingFace on first use.
+open_clip_torch>=2.24
