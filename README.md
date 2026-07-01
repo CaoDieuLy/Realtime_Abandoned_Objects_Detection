@@ -13,6 +13,22 @@ Pipeline tách **2 nền** (đúng nguyên lý abandoned-object detection):
 
 ---
 
+## Hai luồng hoạt động (chọn 1)
+Cùng một pipeline, **khác nhau ở cổng cảnh-báo cuối** (bật/tắt xác-minh CLIP). Cả hai **đều bật async** (YOLO luồng nền, +~20% FPS, không đổi kết quả).
+
+| | **Luồng 1 — KHÔNG CLIP** (mặc định) | **Luồng 2 — CÓ CLIP** (opt-in) |
+|---|---|---|
+| **Recall** (12 vật ABODA) | **12/12** | 10/12 ¹ |
+| **FP** (11 video) | **18** | **4 (−78%)** |
+| Precision | ~40% | **~71%** |
+| FPS (CPU) | ~7–9 | ~5–9 (cảnh đông −15–25%) |
+| Lệnh | `… ` (mặc định) | `… --clip-verify 1` |
+| **Chọn khi** | **recall tối đa** (an-ninh); cảnh đông + vật nhỏ | camera **nhiều đổi-sáng / đổi-cảnh**; cần ít báo-nhầm |
+
+¹ Luồng-2 cắt mạnh FP (đám-đông/đổi-sáng, vd0355 hết báo-lặp máy giặt) nhưng có **khe recall vật-nhỏ**: CLIP nuốt mảnh-vỡ quá nhỏ (video6-túi2). Vì stance *bỏ-sót tệ hơn báo-nhầm*, **Luồng-1 là mặc định**. Số liệu + phân tích căn nguyên đầy đủ: [REPORT §9](REPORT.md), kết quả thô [`results_full_clip/`](results_full_clip/).
+
+---
+
 ## Cài đặt
 ```bash
 git clone <repo-url> && cd <repo>
@@ -140,12 +156,12 @@ Ví dụ đọc đúng số liệu:
 
 ---
 
-## Cơ chế (5 khối, thay model semantic không phải viết lại FSM)
-1. **Warm-up `clean_bg`**: median ~`--bg-learn-seconds` đầu → nền sạch dài hạn.
-2. **Moving mask**: ViBe (`pybgs` C++) hoặc `ControlledViBE` (numba, nhận feedback).
-3. **Semantic source**: `online-yoloseg` (mặc định) · `online-segformer` · `online-pspnet` · `dense` (map offline) · `none`.
-4. **RT-SBS feedback** (tùy chọn): semantic sửa mask ViBe trước khi cập nhật nền.
-5. **AOD FSM**: `clean_bg`-diff + `không moving` + tuổi-tĩnh + cổng semantic (`animate` loại, `object` giữ, `stuff` reject) + matcher / dedup / owner-gate.
+## Cơ chế — 3 NHỊP chạy (thay model semantic không phải viết lại FSM)
+Ba lane ở **ba nhịp KHÁC nhau** — KHÔNG phải 3 nhánh song song cùng-nhịp (sơ đồ đúng: [REPORT Hình 1](REPORT.md)):
+
+- **① Khởi động — chạy MỘT LẦN:** `clean_bg` = median ~`--bg-learn-seconds` đầu rồi **ĐÓNG BĂNG** → nền-sạch dài hạn. Đây là **đầu-vào tham chiếu**, KHÔNG tính lại mỗi frame (nên không ngang-hàng ViBe/YOLO).
+- **② Mỗi khung hình (per-frame):** ViBe (`pybgs`) → mask-moving; `|frame − clean_bg|` → newdiff; **FSM** (`static_state.py`): `static_fg = newdiff ∧ ¬moving` + tuổi-tĩnh + cổng semantic (animate loại / object giữ) → `abandoned` → matcher → cổng cảnh-báo.
+- **③ Ngữ nghĩa — luồng NỀN, KHÔNG mỗi frame:** YOLO-seg chạy **async** (~mỗi N frame; native nhả GIL → song song với vòng chính); vòng chính chỉ đọc **bản-đồ gần-nhất** (cache). Nguồn cắm-thay: `online-yoloseg` (mặc định) · `online-segformer` · `online-pspnet` · `dense` · `none`. *(Chế độ RT-SBS feedback thì semantic sửa mask ViBe trước khi cập nhật nền — giữ ĐỒNG BỘ, xem `--mode`.)*
 
 ### Thay model semantic (dense pluggable)
 Phần semantic **không buộc vào một model**. Nguồn mới chỉ cần xuất các bản đồ điểm (0..`SEMANTIC_MAX`) đúng vai trò:
